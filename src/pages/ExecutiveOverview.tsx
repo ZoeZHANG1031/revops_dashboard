@@ -65,7 +65,10 @@ export function ExecutiveOverview() {
   const accuracy = useMemo(() => evaluateForecastAccuracy(data, filters, scenario), [data, filters, scenario])
   const actions = useMemo(() => buildActionCenter(data, deferredFilters), [data, deferredFilters])
   const groups = useMemo(() => groupActionsByRootCause(actions), [actions])
-  const classTotals = useMemo(() => actionCategoryTotals(actions), [actions])
+  const classTotals = useMemo(
+    () => actionCategoryTotals(actions, { fullScenarioRevenueAtRisk: m.scenarioRevenueAtRisk }),
+    [actions, m.scenarioRevenueAtRisk],
+  )
   const delivery = useMemo(() => computeDeliveryPerformanceImpact(data, deferredFilters), [data, deferredFilters])
   const geo = useMemo(
     () => computeGeographicProfitability(data, deferredFilters, geoDim),
@@ -174,11 +177,12 @@ export function ExecutiveOverview() {
   ]
 
   const EXPOSURE_NOTES: Record<string, string> = {
-    'Recoverable Billing Exposure': 'Open under-billing that could be re-billed (unconfirmed)',
-    'Collections Exposure': 'Overdue invoices — cash timing, not revenue loss',
-    'Customer Revenue Risk': 'Scenario forward risk — not booked',
+    'Recoverable Billing Exposure': 'Open under-billing that could be re-billed · Exposure ≠ Confirmed Loss',
+    'Collections Exposure': 'Overdue invoices — cash timing · Overdue AR ≠ Revenue Leakage',
+    'Customer Revenue Risk': 'Full portfolio Scenario RaR · At Risk ≠ Guaranteed Loss · actions show sample',
     'Billing Correction': 'Duplicate billing — refund risk, not revenue',
     'Margin Pressure': 'Contribution shortfall signal',
+    'Compensation Audit': 'Commission calc / pay variance — investigation only',
   }
 
   return (

@@ -85,15 +85,15 @@ export function computeSalesPipeline(data: DataStore) {
   const remainingSalesTarget = money(Math.max(recentWonTcv * 0.35, weightedPipeline * 0.25, 1))
   const pipelineCoverage = pct(weightedPipeline, remainingSalesTarget)
 
-  const winLossBySegment = (['Enterprise', 'Mid-Market', 'SMB'] as const).map((segment) => {
-    const won = closedWon.filter((o) => {
-      const c = data.customers.find((x) => x.customer_id === o.customer_id)
-      return c?.segment === segment
-    })
-    const lost = closedLost.filter((o) => {
-      const c = data.customers.find((x) => x.customer_id === o.customer_id)
-      return c?.segment === segment
-    })
+  const segmentOf = (o: (typeof data.opportunities)[0]): string => {
+    if (!o.customer_id) return 'Unassigned (no customer)'
+    const c = data.customers.find((x) => x.customer_id === o.customer_id)
+    return c?.segment ?? 'Unassigned (no customer)'
+  }
+  const segmentKeys = ['Enterprise', 'Mid-Market', 'SMB', 'Unassigned (no customer)'] as const
+  const winLossBySegment = segmentKeys.map((segment) => {
+    const won = closedWon.filter((o) => segmentOf(o) === segment)
+    const lost = closedLost.filter((o) => segmentOf(o) === segment)
     const n = won.length + lost.length
     return {
       segment,
@@ -103,11 +103,16 @@ export function computeSalesPipeline(data: DataStore) {
       avgDeal: won.length ? money(sumMoney(won.map((o) => o.opportunity_value)) / won.length) : null,
     }
   })
+  const segmentClosed = winLossBySegment.reduce((a, r) => a + r.won + r.lost, 0)
 
   return {
     pipelineValue,
     weightedPipeline,
     winRate,
+    /** Closed Deal Win Rate = Closed Won / (Closed Won + Closed Lost) */
+    closedDealWinRate: winRate,
+    closedWonCount: closedWon.length,
+    closedLostCount: closedLost.length,
     salesCycleLength,
     newCustomerAcquisition: closedWon.length,
     expectedMonthlyVolume: sumMoney(open.map((o) => o.expected_monthly_volume)),
@@ -122,17 +127,25 @@ export function computeSalesPipeline(data: DataStore) {
     pipelineCoverageNote:
       'Coverage = Weighted Open Pipeline ÷ synthetic remaining target (35% of recent Closed-Won TCV floor). Not a CRM quota system.',
     winLossBySegment,
-    note: 'Stage chart shows current stock by stage (independent counts). It is not a cascading conversion funnel — later stages can hold larger deals. Opportunity value ≠ recognized revenue.',
+    segmentRollupNote:
+      segmentClosed === closed.length
+        ? 'Segment win rates use the same Closed Won+Lost set as Overall (including Unassigned).'
+        : `Segment table covers ${segmentClosed}/${closed.length} closed deals — investigate mapping gaps.`,
+    note: 'Stage chart shows current stock by stage (independent counts). It is not a cascading conversion funnel — later stages can hold larger deals. Opportunity value ≠ recognized revenue. TCV ≠ period Recognized Revenue.',
   }
 }
 
 export function computeOperationalPipeline(data: DataStore, filters: GlobalFilters) {
-  // Distinct customers with an active contract (contracts have several versions over time)
-  const contracted = new Set(data.contracts.filter((c) => c.status === 'Active').map((c) => c.customer_id)).size
-  const activeCustomers = new Set(
-    filterShipments(data, filters).map((s) => s.customer_id),
-  ).size
+  // Scope Active contracts to the same customer filter as shipments (apples-to-apples)
+  const contractedIds = new Set(
+    data.contracts
+      .filter((c) => c.status === 'Active')
+      .filter((c) => !filters.customerIds.length || filters.customerIds.includes(c.customer_id))
+      .map((c) => c.customer_id),
+  )
+  const contracted = contractedIds.size
   const shipments = filterShipments(data, filters)
+  const activeCustomers = new Set(shipments.map((s) => s.customer_id)).size
   const billable = shipments.filter((s) => s.billable)
   const lines = filterBillingLines(data, filters)
   const ratedCharges = sumMoney(
@@ -142,42 +155,107 @@ export function computeOperationalPipeline(data: DataStore, filters: GlobalFilte
   const recognized = computeRecognizedRevenue(data, filters).amount
 
   const stages = [
-    { key: 'contracted', label: 'Contracted Customers', value: contracted, unit: 'count' as const },
-    { key: 'active', label: 'Active Customers', value: activeCustomers, unit: 'count' as const },
-    { key: 'shipments', label: 'Shipment Volume (packages)', value: pkgs(shipments), unit: 'count' as const },
-    { key: 'billable', label: 'Billable Packages', value: pkgs(billable), unit: 'count' as const },
-    { key: 'rated', label: 'Rated Charges', value: ratedCharges, unit: 'money' as const },
-    { key: 'net', label: 'Net Billing', value: netBilling, unit: 'money' as const },
-    { key: 'recognized', label: 'Recognized Revenue', value: recognized, unit: 'money' as const },
+    {
+      key: 'contracted',
+      label: 'Contracted Customers',
+      value: contracted,
+      unit: 'count' as const,
+      dateBasis: 'Contract status = Active (customer-filtered)',
+    },
+    {
+      key: 'active',
+      label: 'Active Customers',
+      value: activeCustomers,
+      unit: 'count' as const,
+      dateBasis: 'Shipments with ship_date in filter',
+    },
+    {
+      key: 'shipments',
+      label: 'Shipment Volume (packages)',
+      value: pkgs(shipments),
+      unit: 'count' as const,
+      dateBasis: 'ship_date',
+    },
+    {
+      key: 'billable',
+      label: 'Billable Packages',
+      value: pkgs(billable),
+      unit: 'count' as const,
+      dateBasis: 'ship_date · billable flag',
+    },
+    {
+      key: 'rated',
+      label: 'Gross Rated Charges',
+      value: ratedCharges,
+      unit: 'money' as const,
+      dateBasis: 'billing_period (line gross before discount)',
+    },
+    {
+      key: 'net',
+      label: 'Net Billing',
+      value: netBilling,
+      unit: 'money' as const,
+      dateBasis: 'billing_period',
+    },
+    {
+      key: 'recognized',
+      label: 'Recognized Revenue',
+      value: recognized,
+      unit: 'money' as const,
+      dateBasis: 'accounting_period (recognition)',
+    },
   ]
 
+  /** Same-unit ratios only. Money→money rows are yield / timing ratios — NOT conversion rates. */
   const conversions = [
     {
       from: 'Contracted → Active',
       rate: pct(activeCustomers, contracted),
-      leakage: 'Inactive contracted accounts / not yet shipping',
+      kind: 'count_ratio' as const,
+      leakage: 'Inactive contracted accounts / not yet shipping in window',
+      numerator: activeCustomers,
+      denominator: contracted,
     },
     {
       from: 'Shipments → Billable',
       rate: pct(pkgs(billable), pkgs(shipments)),
+      kind: 'count_ratio' as const,
       leakage: 'Failed deliveries under non-billable rules',
+      numerator: pkgs(billable),
+      denominator: pkgs(shipments),
     },
     {
-      from: 'Billable → Billed Packages',
+      from: 'Billable packages vs Billed line packages',
       rate: pct(pkgs(lines), pkgs(billable)),
-      leakage: 'Missing billing / rating failures',
+      kind: 'count_ratio' as const,
+      leakage:
+        'Cross-period billing / missing billing — ship_date vs billing_period may differ; not a pure funnel conversion',
+      numerator: pkgs(lines),
+      denominator: pkgs(billable),
     },
     {
-      from: 'Rated → Net Billing',
+      from: 'Net Billing ÷ Gross Rated (yield)',
       rate: pct(netBilling, ratedCharges),
-      leakage: 'Discounts, credits, surcharge omissions',
+      kind: 'yield_ratio' as const,
+      leakage: 'Discounts + credits (not a stage conversion)',
+      numerator: netBilling,
+      denominator: ratedCharges,
     },
     {
-      from: 'Net Billing → Recognized',
+      from: 'Recognized ÷ Net Billing (timing ratio)',
       rate: pct(recognized, netBilling),
-      leakage: 'Timing differences, accruals, credit memos',
+      kind: 'timing_ratio' as const,
+      leakage:
+        'Different date bases (billing_period vs accounting_period). Can exceed 100% with accruals / prior-period release — use Lifecycle Bridge, not conversion %.',
+      numerator: recognized,
+      denominator: netBilling,
     },
   ]
 
-  return { stages, conversions }
+  return {
+    stages,
+    conversions,
+    dateBasisNote:
+      'Operational: ship_date · Commercial billing: billing_period · Accounting: accounting_period. Do not treat Net Billing → Recognized as a conversion funnel.',
+  }
 }

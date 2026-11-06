@@ -1,6 +1,7 @@
-import { RECOVERABLE_EXCEPTION_TYPES } from './exceptionRegistry'
+import { RECOVERABLE_EXCEPTION_TYPES, isOpenException } from './exceptionRegistry'
 import { forecastComparability } from './forecastScope'
 import { computeBillingIntegrity } from './billingIntegrity'
+import { computeArSnapshot } from './arSnapshot'
 import { filterBillingLines, filterCosts, filterExceptions, filterInvoices, filterShipments } from '@/lib/filters'
 import { computeRecognizedRevenue } from '@/calc/recognizedRevenue'
 import { createCalcMemo, filterCacheKey } from '@/lib/memoCalc'
@@ -148,27 +149,27 @@ export const METRIC_REGISTRY: Record<MetricId, MetricMeta> = {
     interpretation: 'Cash/credit risk; do not subtract from recognized revenue.',
     commonCauses: ['Disputes', 'Credit terms', 'Customer stress'],
     grain: 'Invoice',
-    dateBasis: 'due_date vs as-of; filter by invoice accounting_period',
-    includes: 'Overdue status invoices in filter window',
-    excludes: 'Paid invoices; scenario churn risk',
+    dateBasis: 'due_date < as_of_date (or status=Overdue); invoice accounting_period in filter',
+    includes: 'Open balances past due among period-scoped invoices',
+    excludes: 'Paid invoices; scenario churn risk; Current (not overdue) bucket',
     actionHint: 'Finance collections; hold credit if chronic.',
   },
   accounts_receivable: {
     id: 'accounts_receivable',
     name: 'Accounts Receivable',
     chineseName: '应收账款',
-    businessDefinition: 'Unpaid invoice balances (issued/partial/overdue).',
-    formula: 'SUM(open invoice remaining balance)',
+    businessDefinition: 'Unpaid invoice balances (issued/partial/overdue) in filter — same set as AR Aging.',
+    formula: 'SUM(max(0, net_amount − payments)) WHERE status≠Paid AND accounting_period in filter',
     sourceTables: ['fact_invoice', 'fact_payment'],
-    sourceColumns: ['net_amount', 'status'],
+    sourceColumns: ['net_amount', 'status', 'due_date'],
     calculationExample: 'Open AR $12K including $3.8K overdue',
     interpretation: 'Working capital tied in receivables.',
     commonCauses: ['Billing growth', 'Payment terms', 'Delinquency'],
     grain: 'Invoice',
-    dateBasis: 'invoice in filter; open as of snapshot',
-    includes: 'Issued, Partial, Overdue',
+    dateBasis: 'accounting_period filter · remaining balance as-of snapshot',
+    includes: 'Issued, Partial, Overdue with remaining balance',
     excludes: 'Paid',
-    actionHint: 'Monitor aging buckets.',
+    actionHint: 'Monitor aging buckets — Σ aging must equal Outstanding AR.',
   },
   forecast_existing: {
     id: 'forecast_existing',
@@ -494,17 +495,6 @@ export interface SharedMetrics {
 
 const sharedMetricsMemo = createCalcMemo<SharedMetrics>(64)
 
-const paidCache = new WeakMap<object, Map<string, number>>()
-function paidByInvoiceIndex(data: DataStore): Map<string, number> {
-  let m = paidCache.get(data.payments)
-  if (!m) {
-    m = new Map()
-    for (const p of data.payments) m.set(p.invoice_id, (m.get(p.invoice_id) ?? 0) + p.amount)
-    paidCache.set(data.payments, m)
-  }
-  return m
-}
-
 export function computeSharedMetrics(
   data: DataStore,
   filters: GlobalFilters,
@@ -539,17 +529,10 @@ function computeSharedMetricsFresh(
       })
       .map((p) => p.amount),
   )
-  const openInvoices = invoices.filter((i) => i.status !== 'Paid')
-  const paidByInvoice = paidByInvoiceIndex(data)
-  // Overdue AR = outstanding balance (net − payments) of invoices past due as of the snapshot
-  const overdueAr = sumMoney(
-    invoices
-      .filter((i) => i.status === 'Overdue')
-      .map((i) => money(Math.max(0, i.net_amount - (paidByInvoice.get(i.invoice_id) ?? 0)))),
-  )
-  const accountsReceivable = sumMoney(
-    openInvoices.map((i) => money(Math.max(0, i.net_amount - (paidByInvoice.get(i.invoice_id) ?? 0)))),
-  )
+  // AR snapshot: same population as Collections aging (filterInvoices × remaining balance)
+  const ar = computeArSnapshot(data, filters)
+  const overdueAr = ar.overdueAr
+  const accountsReceivable = ar.outstandingAr
 
   const forecastExisting = sumMoney(
     data.forecasts
@@ -581,9 +564,14 @@ function computeSharedMetricsFresh(
   const expectedCharges = integrity.expectedGross
 
   const exceptions = filterExceptions(data, filters)
+  // Open / investigating only — matches METRIC_REGISTRY.unbilled_exposure + Reconciliation
   const unbilledExposure = sumMoney(
     exceptions
-      .filter((e) => e.exception_type === 'Missing Billing' || e.exception_type === 'Unbilled Packages')
+      .filter(
+        (e) =>
+          isOpenException(e) &&
+          (e.exception_type === 'Missing Billing' || e.exception_type === 'Unbilled Packages'),
+      )
       .map((e) => e.financial_impact),
   )
   const openRecoverableLeakage = sumMoney(

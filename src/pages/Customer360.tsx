@@ -30,6 +30,8 @@ import { Collapsible } from '@/components/common/Collapsible'
 import { DataTable } from '@/components/common/DataTable'
 import { DrilldownLink } from '@/components/common/DrilldownLink'
 import { PageHeader } from '@/components/common/PageHeader'
+import { ModuleSubNav } from '@/components/layout/ModuleSubNav'
+import { CUSTOMER_NAV } from '@/lib/icons'
 import { useApp } from '@/context/AppContext'
 import { exportToCsv } from '@/lib/export'
 import { filterCosts, filterExceptions, filterShipments, filterBillingLines } from '@/lib/filters'
@@ -278,6 +280,7 @@ export function Customer360() {
   if (!customerId || !cust || !health || !profile) {
     return (
       <div className="space-y-4">
+        <ModuleSubNav items={CUSTOMER_NAV} />
         <PageHeader path="/customer-360" scope="Select a customer to open the investigation workspace" />
         <p className="text-sm text-ink-muted">No customer selected.</p>
       </div>
@@ -291,6 +294,7 @@ export function Customer360() {
 
   return (
     <div className="space-y-4">
+      <ModuleSubNav items={CUSTOMER_NAV} />
       <PageHeader
         path="/customer-360"
         scope="Five-layer investigation · Synthetic engagement · Health v1 + contract risk are separate scores"

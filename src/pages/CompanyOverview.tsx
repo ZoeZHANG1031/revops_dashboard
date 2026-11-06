@@ -21,6 +21,7 @@ import {
   type MetroFootprintRow,
   type ServiceMixMetric,
 } from '@/calc/companyOverview'
+import { runDataValidation } from '@/calc/dataValidation'
 import { computeSharedMetrics } from '@/calc/metricRegistry'
 import { UsMetroMap } from '@/components/charts/UsMetroMap'
 import { ChartCard } from '@/components/common/ChartCard'
@@ -77,6 +78,10 @@ export function CompanyOverview() {
   )
   const shared = useMemo(
     () => computeSharedMetrics(data, deferredFilters, scenario),
+    [data, deferredFilters, scenario],
+  )
+  const crossValidation = useMemo(
+    () => runDataValidation(data, deferredFilters, scenario),
     [data, deferredFilters, scenario],
   )
   // Trend keeps the pre-selection window so the selected month stays in context
@@ -886,7 +891,7 @@ export function CompanyOverview() {
         </Collapsible>
       </ChartCard>
 
-      <Collapsible title="Data Quality Monitor" subtitle="Deterministic checks">
+      <Collapsible title="Data Quality Monitor" subtitle="Deterministic checks · default collapsed for analysts">
         <DataTable
           rows={model.dataQuality.map((q) => ({ ...q, id: q.id }))}
           rowKey={(r) => r.id}
@@ -907,6 +912,20 @@ export function CompanyOverview() {
               align: 'right',
               render: (r) => (r.financialImpact != null ? formatCurrency(r.financialImpact, true) : '—'),
             },
+          ]}
+        />
+        <p className="mb-1 mt-4 text-xs font-semibold text-ink">Cross-module validation</p>
+        <DataTable
+          rows={crossValidation.map((q, i) => ({ ...q, id: `xv-${i}` }))}
+          rowKey={(r) => r.id}
+          columns={[
+            { key: 'n', header: 'Check', render: (r) => r.name, searchValue: (r) => r.name },
+            { key: 's', header: 'Status', render: (r) => r.status, sortValue: (r) => r.status },
+            { key: 'e', header: 'Expected', render: (r) => r.expected },
+            { key: 'a', header: 'Actual', render: (r) => r.actual },
+            { key: 'd', header: 'Diff', render: (r) => r.difference },
+            { key: 'sev', header: 'Severity', render: (r) => r.severity },
+            { key: 'r', header: 'Related', render: (r) => r.relatedRecords },
           ]}
         />
       </Collapsible>

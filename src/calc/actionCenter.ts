@@ -237,7 +237,10 @@ export function groupActionsByRootCause(items: ActionItem[]): ActionGroup[] {
 }
 
 /** Totals per exposure class — shown side by side, never added together */
-export function actionCategoryTotals(items: ActionItem[]) {
+export function actionCategoryTotals(
+  items: ActionItem[],
+  opts?: { fullScenarioRevenueAtRisk?: number | null },
+) {
   const cats: ActionCategory[] = [
     'Recoverable Billing Exposure',
     'Collections Exposure',
@@ -246,9 +249,25 @@ export function actionCategoryTotals(items: ActionItem[]) {
     'Margin Pressure',
     'Compensation Audit',
   ]
-  return cats.map((category) => ({
-    category,
-    count: items.filter((i) => i.category === category).length,
-    impact: sumMoney(items.filter((i) => i.category === category).map((i) => i.financialImpact)),
-  }))
+  return cats.map((category) => {
+    const subset = items.filter((i) => i.category === category)
+    const actionImpact = sumMoney(subset.map((i) => i.financialImpact))
+    // Customer Revenue Risk on Executive uses portfolio Scenario RaR when provided —
+    // action rows remain a prioritized sample (top low-health), not the full exposure.
+    const impact =
+      category === 'Customer Revenue Risk' &&
+      opts?.fullScenarioRevenueAtRisk != null
+        ? opts.fullScenarioRevenueAtRisk
+        : actionImpact
+    return {
+      category,
+      count: subset.length,
+      impact,
+      actionSampleImpact: actionImpact,
+      note:
+        category === 'Customer Revenue Risk' && opts?.fullScenarioRevenueAtRisk != null
+          ? 'Full portfolio Scenario RaR · action list shows prioritized sample only'
+          : undefined,
+    }
+  })
 }

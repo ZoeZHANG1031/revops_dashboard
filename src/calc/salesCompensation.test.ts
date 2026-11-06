@@ -5,10 +5,12 @@ import { defaultFilters, listHistoricalPeriods } from '@/lib/filters'
 import { money } from '@/lib/money'
 import {
   computeCompKpis,
+  computeIndependentExpectedCommission,
   computeRepPerformance,
   currentPlanAsSimParams,
   filterCommissionAudits,
   filterCommissionLedger,
+  runCommissionTransactionAudit,
   simulatePlanChange,
 } from './salesCompensation'
 import { computeSharedMetrics } from './metricRegistry'
@@ -92,19 +94,22 @@ describe('sales compensation', () => {
     })
     expect(higher.proposedPayout).toBeGreaterThan(base.proposedPayout)
     expect(higher.delta).not.toBe(0)
+    expect(Math.abs(higher.delta - higher.sumRepDelta)).toBeLessThan(0.02)
     const afterPaid = money(
       data.commissionLedger.reduce((a, L) => a + L.paid_amount, 0),
     )
     expect(afterPaid).toBe(beforePaid)
   })
 
-  it('distinguishes earned, approved, and paid KPIs', () => {
+  it('distinguishes earned, approved, paid, pending, and approved unpaid', () => {
     const k = computeCompKpis(data, filters)
     expect(k.earned).toBeGreaterThan(0)
     expect(k.approved).toBeGreaterThanOrEqual(0)
     expect(k.paid).toBeGreaterThanOrEqual(0)
-    expect(k.unpaid).toBeGreaterThanOrEqual(0)
+    expect(k.pendingApproval).toBeGreaterThanOrEqual(0)
+    expect(k.approvedUnpaid).toBeGreaterThanOrEqual(0)
     expect(Math.abs(k.unpaid - Math.max(0, k.approved - k.paid))).toBeLessThan(0.05)
+    expect(Math.abs(k.approvedUnpaid - k.unpaid)).toBeLessThan(0.05)
   })
 
   it('does not change core shared revenue metrics when compensation is present', () => {
@@ -122,5 +127,21 @@ describe('sales compensation', () => {
       endPeriod: data.meta.history_end,
     })
     expect(audits.length).toBe(data.commissionAuditExceptions.length)
+  })
+
+  it('independent expected commission is recomputed from plan rules, not ledger.earned copy', () => {
+    const L = filterCommissionLedger(data, filters).find((x) => x.eligibility_type === 'Revenue')!
+    const { expected, formula } = computeIndependentExpectedCommission(data, L, 100)
+    expect(formula).toContain('Eligible')
+    expect(formula).toContain('Rate')
+    // Mutating a clone of earned must not change independent expected
+    const clone = { ...L, commission_earned: L.commission_earned + 9999 }
+    const again = computeIndependentExpectedCommission(data, clone, 100)
+    expect(again.expected).toBe(expected)
+    const tx = runCommissionTransactionAudit(data, filters)
+    expect(tx.length).toBeGreaterThan(0)
+    expect(tx.some((t) => t.auditStatus === 'Passed' || t.auditStatus === 'Under Review')).toBe(
+      true,
+    )
   })
 })

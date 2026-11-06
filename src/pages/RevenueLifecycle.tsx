@@ -36,7 +36,7 @@ import { Collapsible } from '@/components/common/Collapsible'
 import { DrilldownLink } from '@/components/common/DrilldownLink'
 import { ModuleSubNav } from '@/components/layout/ModuleSubNav'
 import { PageHeader } from '@/components/common/PageHeader'
-import { REVENUE_PERFORMANCE_NAV } from '@/lib/icons'
+import { REVENUE_OPS_NAV } from '@/lib/icons'
 import { TraceabilityChain } from '@/components/common/TraceabilityChain'
 import { useApp } from '@/context/AppContext'
 import { exportToCsv } from '@/lib/export'
@@ -44,7 +44,12 @@ import { PALETTE } from '@/lib/icons'
 import { formatCurrency, formatCurrencyPrecise, formatNumber, formatPercent } from '@/lib/money'
 import type { FactException } from '@/types'
 
-export function RevenueLifecycle() {
+export type LifecycleFocus = 'all' | 'pipeline' | 'lifecycle' | 'collections'
+
+export function RevenueLifecycle({ pageFocus = 'lifecycle' }: { pageFocus?: LifecycleFocus }) {
+  const showPipeline = pageFocus === 'all' || pageFocus === 'pipeline'
+  const showOps = pageFocus === 'all' || pageFocus === 'lifecycle'
+  const pagePath = pageFocus === 'pipeline' ? '/pipeline' : '/lifecycle'
   const { data, filters, scenario, navigateToEntity, navigateWithContext, openCustomer360, openEntity } = useApp()
   const [pipeMetric, setPipeMetric] = useState<'value' | 'count'>('value')
   const sales = useMemo(() => computeSalesPipeline(data), [data])
@@ -155,10 +160,14 @@ export function RevenueLifecycle() {
 
   return (
     <div className="space-y-5">
-      <ModuleSubNav items={REVENUE_PERFORMANCE_NAV} />
+      <ModuleSubNav items={REVENUE_OPS_NAV} />
       <PageHeader
-        path="/lifecycle"
-        scope="Commercial pipeline → contract activation → operational lifecycle · TCV ≠ revenue · Net Billing ≠ Recognized ≠ Cash"
+        path={pagePath}
+        scope={
+          pageFocus === 'pipeline'
+            ? 'Commercial pipeline snapshot · TCV ≠ revenue · Cohort ≠ stage stock'
+            : 'Contract → Shipment → Billing → Recognition → Collection · Net Billing ≠ Recognized ≠ Cash'
+        }
         actions={
           <>
             <button
@@ -190,6 +199,7 @@ export function RevenueLifecycle() {
         }
       />
 
+      {showOps && (
       <ChartCard
         icon="revenue"
         title="Operational Revenue Lifecycle"
@@ -249,7 +259,10 @@ export function RevenueLifecycle() {
           />
         )}
       </ChartCard>
+      )}
 
+      {showPipeline && (
+      <>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
         <Stat label="Pipeline Value" value={formatCurrency(sales.pipelineValue, true)} />
         <Stat label="Weighted Pipeline" value={formatCurrency(sales.weightedPipeline, true)} hint="Value × Win % · ≠ revenue" />
@@ -397,7 +410,16 @@ export function RevenueLifecycle() {
               />
             </div>
             <div>
-              <p className="mb-1 text-xs font-semibold text-ink">Win / loss by segment</p>
+              <p className="mb-1 text-xs font-semibold text-ink">
+                Win / loss by segment · Closed Deal Win Rate = Won ÷ (Won+Lost)
+              </p>
+              {sales.segmentRollupNote && (
+                <p className="mb-1 text-[11px] text-ink-muted">{sales.segmentRollupNote}</p>
+              )}
+              <p className="mb-1 text-[11px] text-ink-muted">
+                Overall Closed Deal Win Rate {formatPercent(sales.closedDealWinRate)} (
+                {formatNumber(sales.closedWonCount)} won / {formatNumber(sales.closedLostCount)} lost)
+              </p>
               <DataTable
                 rows={sales.winLossBySegment.map((r) => ({ ...r, id: r.segment }))}
                 rowKey={(r) => r.segment}
@@ -439,7 +461,11 @@ export function RevenueLifecycle() {
             bookings target — not a CRM quota table).
           </p>
         </ChartCard>
+      </div>
+      </>
+      )}
 
+      {showOps && (
         <ChartCard
           icon="shipments"
           title="Operational Stage Records"
@@ -483,12 +509,27 @@ export function RevenueLifecycle() {
           >
             Investigate Billable → Billed gap (Missing Billing)
           </button>
+          {ops.dateBasisNote && (
+            <p className="mt-3 rounded-md border border-[#dce6df] bg-[#f7faf8] px-2 py-1.5 text-[11px] text-ink-muted">
+              {ops.dateBasisNote}
+            </p>
+          )}
           <div className="mt-3 space-y-1.5">
             {ops.conversions.map((c) => (
               <div key={c.from} className="flex items-start justify-between gap-2 text-xs">
                 <div>
-                  <p className="font-medium text-ink">{c.from}</p>
+                  <p className="font-medium text-ink">
+                    {c.from}
+                    <span className="ml-1 font-normal text-ink-muted">
+                      ({c.kind === 'count_ratio' ? 'count ratio' : c.kind === 'yield_ratio' ? 'yield' : 'timing — not conversion'})
+                    </span>
+                  </p>
                   <p className="text-ink-muted">{c.leakage}</p>
+                  <p className="text-[10px] text-ink-muted">
+                    n/d = {typeof c.numerator === 'number' && c.kind === 'count_ratio'
+                      ? `${formatNumber(c.numerator)} / ${formatNumber(c.denominator)}`
+                      : `${formatCurrency(c.numerator, true)} / ${formatCurrency(c.denominator, true)}`}
+                  </p>
                 </div>
                 <span className="font-mono">{formatPercent(c.rate)}</span>
               </div>
@@ -514,8 +555,10 @@ export function RevenueLifecycle() {
             </div>
           )}
         </ChartCard>
-      </div>
+      )}
 
+      {showOps && (
+      <>
       <ChartCard
         title="Pricing Rules in Force"
         subtitle="Default: currently effective versions only. Match ship_date to effective window — not latest."
@@ -648,6 +691,8 @@ export function RevenueLifecycle() {
         </Collapsible>
         )}
       </ChartCard>
+      </>
+      )}
     </div>
   )
 }

@@ -18,7 +18,7 @@ import { computeReconciliationBridge } from '@/calc/reconBridge'
 import { EXCEPTION_REGISTRY, exposureByClass, isOpenException } from '@/calc/exceptionRegistry'
 import { ModuleSubNav } from '@/components/layout/ModuleSubNav'
 import { PageHeader } from '@/components/common/PageHeader'
-import { REVENUE_PERFORMANCE_NAV } from '@/lib/icons'
+import { REVENUE_OPS_NAV } from '@/lib/icons'
 import { InfoTip, StatusIndicator } from '@/components/common/StatusIndicator'
 import { FloatingWaterfall } from '@/components/charts/FloatingWaterfall'
 import { ChartCard } from '@/components/common/ChartCard'
@@ -199,7 +199,7 @@ export function RevenueReconciliation() {
 
   return (
     <div className="space-y-5">
-      <ModuleSubNav items={REVENUE_PERFORMANCE_NAV} />
+      <ModuleSubNav items={REVENUE_OPS_NAV} />
       <PageHeader
         path="/reconciliation"
         scope={`${filters.startPeriod} → ${filters.endPeriod} · unconfirmed ≠ recoverable`}
@@ -325,16 +325,37 @@ export function RevenueReconciliation() {
               tickFormat={bridgeMode === 'full' ? undefined : (v) => `${v < 0 ? '−' : ''}$${(Math.abs(v) / 1000).toFixed(1)}k`}
             />
             <p className="mt-2 text-xs text-ink-muted">
-              {bridge.reconciles ? '✓ Bridge reconciles.' : '⚠ Residual does not foot — see Unresolved.'} Leakage-like
-              components ≈ {formatCurrency(bridge.openLeakage, true)} (unconfirmed; ≠ total variance).
+              {bridge.reconciles ? '✓ Bridge reconciles.' : '⚠ Data Quality Warning — residual does not foot; do not auto-fill.'}{' '}
+              Gap {formatCurrency(bridge.totalGap, true)}
+              {bridge.gapPctOfExpected != null ? ` (${bridge.gapPctOfExpected.toFixed(2)}% of Expected)` : ''}.
+              Recoverable-class ≈ {formatCurrency(bridge.openLeakage, true)} (Exposure ≠ Confirmed Loss).
             </p>
-            <Collapsible title="Bridge components" subtitle="Signed amounts and notes">
+            <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-4 text-[11px]">
+              <div className="rounded border border-[#dce6df] px-2 py-1.5">
+                <div className="text-ink-muted">A · Valid Commercial</div>
+                <div className="font-mono font-semibold">{formatCurrency(bridge.classTotals.validCommercial, true)}</div>
+              </div>
+              <div className="rounded border border-[#dce6df] px-2 py-1.5">
+                <div className="text-ink-muted">B · Timing</div>
+                <div className="font-mono font-semibold">{formatCurrency(bridge.classTotals.timing, true)}</div>
+              </div>
+              <div className="rounded border border-amber-200 bg-amber-50/50 px-2 py-1.5">
+                <div className="text-ink-muted">C · Recoverable</div>
+                <div className="font-mono font-semibold">{formatCurrency(bridge.classTotals.recoverable, true)}</div>
+              </div>
+              <div className="rounded border border-slate-200 px-2 py-1.5">
+                <div className="text-ink-muted">D · Unexplained</div>
+                <div className="font-mono font-semibold">{formatCurrency(bridge.classTotals.unexplained, true)}</div>
+              </div>
+            </div>
+            <Collapsible title="Bridge components" subtitle="Class · signed amounts · notes">
               <DataTable
                 rows={bridge.items.filter((i) => i.key !== 'expected' && i.key !== 'actual').map((i) => ({ ...i, id: i.key }))}
                 rowKey={(r) => r.key}
                 columns={[
-                  { key: 'l', header: 'Component', render: (r) => r.label },
-                  { key: 'a', header: 'Signed Impact', align: 'right', render: (r) => formatCurrencyPrecise(r.amount) },
+                  { key: 'l', header: 'Component', render: (r) => r.label, searchValue: (r) => `${r.label} ${r.diffClass}` },
+                  { key: 'c', header: 'Class', render: (r) => r.diffClass, sortValue: (r) => r.diffClass },
+                  { key: 'a', header: 'Signed Impact', align: 'right', render: (r) => formatCurrencyPrecise(r.amount), sortValue: (r) => r.amount },
                   { key: 'n', header: 'Note', render: (r) => r.note },
                 ]}
               />

@@ -1,21 +1,19 @@
 /**
- * IA map (Phase 1): `/executive` Executive Command Center (default home);
- * `/lifecycle` Revenue Performance › Revenue Flow; `/reconciliation` › Billing & Reconciliation;
- * `/unit-economics` › Profitability; `/customers` Customer Intelligence › Portfolio;
- * `/customer-360` via portfolio only; `/forecasting` Revenue Forecasting; `/actions` Action Center;
- * `/company` Company & Network Profile (was `/` Company Overview).
+ * Two-level RevOps IA: Business Module → Analysis Page.
+ * Expand state persists for the session; active child path auto-expands its parent.
  */
 import { ChevronDown, Package } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { NAV_MODULES, type NavModule } from '@/lib/icons'
 
-const PRIMARY_MODULES = NAV_MODULES.filter((m) => m.id !== 'company')
-const COMPANY_MODULE = NAV_MODULES.find((m) => m.id === 'company')!
+function childActive(path: string, pathname: string): boolean {
+  return pathname === path
+}
 
 function moduleActive(mod: NavModule, pathname: string): boolean {
   if (mod.path) return pathname === mod.path
-  return mod.children?.some((c) => pathname === c.path) ?? false
+  return mod.children?.some((c) => childActive(c.path, pathname)) ?? false
 }
 
 export function Sidebar() {
@@ -25,7 +23,7 @@ export function Sidebar() {
   const autoExpandIds = useMemo(() => {
     const ids: string[] = []
     for (const mod of NAV_MODULES) {
-      if (mod.children?.some((c) => c.path === pathname)) ids.push(mod.id)
+      if (mod.children?.some((c) => childActive(c.path, pathname))) ids.push(mod.id)
     }
     return ids
   }, [pathname])
@@ -35,9 +33,7 @@ export function Sidebar() {
     setExpanded((prev) => {
       let next = prev
       for (const id of autoExpandIds) {
-        if (!prev[id]) {
-          next = { ...next, [id]: true }
-        }
+        if (!prev[id]) next = { ...next, [id]: true }
       }
       return next
     })
@@ -45,11 +41,20 @@ export function Sidebar() {
 
   const linkClass = ({ isActive }: { isActive: boolean }) =>
     `flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors ${
-      isActive ? 'bg-brand-50 font-medium text-forest' : 'text-ink-muted hover:bg-[#f5f8f5] hover:text-ink'
+      isActive
+        ? 'bg-brand-50 font-medium text-forest ring-1 ring-inset ring-forest/15'
+        : 'text-ink-muted hover:bg-[#f5f8f5] hover:text-ink'
+    }`
+
+  const childLinkClass = ({ isActive }: { isActive: boolean }) =>
+    `relative flex items-center gap-2 rounded-lg py-1.5 pl-3 pr-2 text-[13px] transition-colors ${
+      isActive
+        ? 'bg-brand-50 font-medium text-forest before:absolute before:left-0 before:top-1 before:bottom-1 before:w-0.5 before:rounded-full before:bg-forest'
+        : 'text-ink-muted hover:bg-[#f5f8f5] hover:text-ink'
     }`
 
   return (
-    <aside className="flex w-60 shrink-0 flex-col border-r border-[#dce6df] bg-white">
+    <aside className="flex w-64 shrink-0 flex-col border-r border-[#dce6df] bg-white">
       <div className="border-b border-[#dce6df] px-4 py-5">
         <div className="flex items-center gap-2.5">
           <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-forest text-lime">
@@ -61,8 +66,8 @@ export function Sidebar() {
           </div>
         </div>
       </div>
-      <nav className="flex flex-1 flex-col gap-0.5 p-2">
-        {PRIMARY_MODULES.map((mod) => {
+      <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto p-2">
+        {NAV_MODULES.map((mod) => {
           if (mod.children) {
             const open = expanded[mod.id] ?? false
             const parentActive = moduleActive(mod, pathname)
@@ -71,23 +76,31 @@ export function Sidebar() {
                 <button
                   type="button"
                   className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors ${
-                    parentActive && !open
-                      ? 'bg-brand-50/60 font-medium text-forest'
+                    parentActive
+                      ? 'font-medium text-forest'
                       : 'text-ink-muted hover:bg-[#f5f8f5] hover:text-ink'
                   }`}
                   aria-expanded={open}
                   onClick={() => setExpanded((e) => ({ ...e, [mod.id]: !open }))}
                 >
-                  <mod.icon size={16} />
-                  <span className="flex-1">{mod.label}</span>
-                  <ChevronDown size={14} className={`shrink-0 transition-transform ${open ? 'rotate-0' : '-rotate-90'}`} />
+                  <mod.icon size={16} className="shrink-0" />
+                  <span className="flex-1 leading-snug">{mod.label}</span>
+                  <ChevronDown
+                    size={14}
+                    className={`shrink-0 transition-transform ${open ? 'rotate-0' : '-rotate-90'}`}
+                  />
                 </button>
                 {open && (
-                  <div className="ml-2 flex flex-col gap-0.5 border-l border-[#dce6df] pl-2">
+                  <div className="ml-3 flex flex-col gap-0.5 border-l border-[#dce6df] pl-2">
                     {mod.children.map((child) => (
-                      <NavLink key={child.path} to={{ pathname: child.path, search }} className={linkClass}>
-                        <child.icon size={15} />
-                        {child.label}
+                      <NavLink
+                        key={child.path}
+                        to={{ pathname: child.path, search }}
+                        className={childLinkClass}
+                        title={child.question}
+                      >
+                        <child.icon size={14} className="shrink-0 opacity-80" />
+                        <span className="leading-snug">{child.label}</span>
                       </NavLink>
                     ))}
                   </div>
@@ -103,12 +116,6 @@ export function Sidebar() {
           )
         })}
       </nav>
-      <div className="p-2">
-        <NavLink to={{ pathname: COMPANY_MODULE.path!, search }} className={linkClass}>
-          <COMPANY_MODULE.icon size={16} />
-          {COMPANY_MODULE.label}
-        </NavLink>
-      </div>
       <div className="border-t border-[#dce6df] p-3 text-xs leading-relaxed text-ink-muted">
         Independent demo inspired by last-mile ops visuals. Not a Jitsu product. Synthetic data only.
       </div>

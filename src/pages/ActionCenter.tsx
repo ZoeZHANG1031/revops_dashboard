@@ -7,6 +7,8 @@ import {
 import { ChartCard } from '@/components/common/ChartCard'
 import { DataTable } from '@/components/common/DataTable'
 import { PageHeader } from '@/components/common/PageHeader'
+import { ModuleSubNav } from '@/components/layout/ModuleSubNav'
+import { ACTION_NAV } from '@/lib/icons'
 import { StatusIndicator } from '@/components/common/StatusIndicator'
 import { useApp } from '@/context/AppContext'
 import { exportToCsv } from '@/lib/export'
@@ -73,6 +75,7 @@ export function ActionCenterPage() {
 
   return (
     <div className="space-y-4">
+      <ModuleSubNav items={ACTION_NAV} />
       <PageHeader
         path="/actions"
         title="Action Center"

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Bar,
   BarChart,
@@ -22,8 +22,7 @@ import {
 } from '@/calc/unitEconomics'
 import { ModuleSubNav } from '@/components/layout/ModuleSubNav'
 import { PageHeader } from '@/components/common/PageHeader'
-import { REVENUE_PERFORMANCE_NAV } from '@/lib/icons'
-import { PALETTE } from '@/lib/icons'
+import { PROFITABILITY_NAV, PALETTE } from '@/lib/icons'
 import { FloatingWaterfall } from '@/components/charts/FloatingWaterfall'
 import { StatTile } from '@/components/common/StatTile'
 import { ChartCard } from '@/components/common/ChartCard'
@@ -61,14 +60,28 @@ function applySelection(filters: GlobalFilters, sel: LocalSelection | null): Glo
   return { ...filters, customerIds: [sel.key] }
 }
 
-export function UnitEconomics() {
+export function UnitEconomics({
+  focusDim = 'service',
+  pagePath = '/profitability/unit',
+}: {
+  focusDim?: UnitEconDimension
+  pagePath?: string
+}) {
   const { data, filters, setHighlightCustomerId, openEntityDrawer, navigateWithContext } =
     useApp()
-  const [dimension, setDimension] = useState<UnitEconDimension>('service')
+  const [dimension, setDimension] = useState<UnitEconDimension>(focusDim)
+  useEffect(() => {
+    setDimension(focusDim)
+    if (focusDim === 'customer' || focusDim === 'metro' || focusDim === 'service') {
+      setCostDim(focusDim)
+    }
+  }, [focusDim])
   const [stackMetric, setStackMetric] = useState<StackMetric>('stack')
   const [fixedScenario, setFixedScenario] = useState<'Base' | 'Downside'>('Base')
   const [selection, setSelection] = useState<LocalSelection | null>(null)
-  const [costDim, setCostDim] = useState<'service' | 'metro' | 'customer' | 'dsp'>('service')
+  const [costDim, setCostDim] = useState<'service' | 'metro' | 'customer' | 'dsp'>(
+    focusDim === 'customer' || focusDim === 'metro' || focusDim === 'service' ? focusDim : 'service',
+  )
 
   // Local selection narrows this page only (not the global filter bar)
   const scoped = useMemo(() => applySelection(filters, selection), [filters, selection])
@@ -215,9 +228,9 @@ export function UnitEconomics() {
 
   return (
     <div className="space-y-5">
-      <ModuleSubNav items={REVENUE_PERFORMANCE_NAV} />
+      <ModuleSubNav items={PROFITABILITY_NAV} />
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <PageHeader path="/unit-economics" scope="Contribution (before fixed) ≠ Operating Profit (after allocated fixed)" />
+        <PageHeader path={pagePath} scope="Contribution (before fixed) ≠ Operating Profit (after allocated fixed)" />
         <div className="flex flex-wrap items-center gap-2">
           {selection && (
             <span className="inline-flex items-center gap-1 rounded-full bg-brand-50 px-2.5 py-1 text-[13px] text-forest ring-1 ring-forest/20">

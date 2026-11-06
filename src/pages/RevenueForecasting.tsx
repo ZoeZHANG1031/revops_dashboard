@@ -35,8 +35,9 @@ import { evaluateSnapshotBacktest } from '@/calc/forecastBacktest'
 import { forecastComparability } from '@/calc/forecastScope'
 import { computeRecognizedRevenue } from '@/calc/recognizedRevenue'
 import { PageHeader } from '@/components/common/PageHeader'
+import { ModuleSubNav } from '@/components/layout/ModuleSubNav'
 import { InfoTip } from '@/components/common/StatusIndicator'
-import { PALETTE } from '@/lib/icons'
+import { FORECASTING_NAV, PALETTE } from '@/lib/icons'
 import { computeVarianceBridge } from '@/calc/varianceBridge'
 import { forecastCommissionExpense } from '@/calc/salesCompensation'
 import { FloatingWaterfall } from '@/components/charts/FloatingWaterfall'
@@ -52,7 +53,22 @@ import { formatCurrency, formatCurrencyPrecise, formatPercent } from '@/lib/mone
 const SCENARIOS = ['Base', 'Upside', 'Downside'] as const
 const HORIZONS: HorizonPreset[] = [3, 6, 12]
 
-export function RevenueForecasting() {
+export type ForecastFocus = 'outlook' | 'scenarios' | 'accuracy' | 'gap'
+
+export function RevenueForecasting({ focus = 'outlook' }: { focus?: ForecastFocus }) {
+  const showOutlook = focus === 'outlook'
+  const showScenarios = focus === 'scenarios'
+  const showAccuracy = focus === 'accuracy'
+  const showGap = focus === 'gap'
+  const pagePath =
+    focus === 'scenarios'
+      ? '/forecasting/scenarios'
+      : focus === 'accuracy'
+        ? '/forecasting/accuracy'
+        : focus === 'gap'
+          ? '/forecasting/gap'
+          : '/forecasting'
+
   const {
     data,
     filters,
@@ -344,9 +360,9 @@ export function RevenueForecasting() {
 
   return (
     <div className="space-y-5">
+      <ModuleSubNav items={FORECASTING_NAV} />
       <PageHeader
-        path="/forecasting"
-        question="How much revenue can we expect, where are we off target, and what actions can improve the outlook?"
+        path={pagePath}
         scope={`${overview.horizon.label} · ${scenario} · Total Business = Existing + Pipeline`}
         actions={
           <>
@@ -761,6 +777,7 @@ export function RevenueForecasting() {
         />
       </ChartCard>
 
+      {(showGap || showOutlook) && (
       <ChartCard
         icon="actions"
         title="What Would Close the Gap?"
@@ -882,7 +899,9 @@ export function RevenueForecasting() {
           </div>
         )}
       </ChartCard>
+      )}
 
+      {(showGap || showOutlook) && (
       <ChartCard
         icon="customers"
         iconTone="customer"
@@ -933,6 +952,7 @@ export function RevenueForecasting() {
           ]}
         />
       </ChartCard>
+      )}
 
       <ChartCard
         icon="forecast"
@@ -1012,6 +1032,8 @@ export function RevenueForecasting() {
         </div>
       </div>
 
+      {(showScenarios || showOutlook) && (
+      <>
       <ChartCard
         icon="scenario"
         iconTone="forecast"
@@ -1182,7 +1204,10 @@ export function RevenueForecasting() {
           </div>
         )}
       </ChartCard>
+      </>
+      )}
 
+      {(showOutlook) && (
       <Collapsible
         title="Forward Commission Expense (estimate)"
         subtitle="Existing Forecast Net Billing × plan revenue_rate — separate from COGS; do not double-subtract in Profitability"
@@ -1225,11 +1250,13 @@ export function RevenueForecasting() {
           Open Sales Compensation & Plan Simulator
         </button>
       </Collapsible>
+      )}
 
+      {(showAccuracy || showOutlook) && (
       <Collapsible
         title="Forecast Performance & Diagnostics"
-        subtitle="Historical Actual vs Forecast — secondary to forward planning"
-        defaultOpen={false}
+        subtitle={showAccuracy ? "Historical Actual vs Forecast — primary analysis on this page" : "Historical Actual vs Forecast — secondary to forward planning"}
+        defaultOpen={showAccuracy}
       >
         <div className="space-y-5 pt-2">
           {!isComparable && (
@@ -1554,6 +1581,7 @@ export function RevenueForecasting() {
           </ChartCard>
         </div>
       </Collapsible>
+      )}
     </div>
   )
 }

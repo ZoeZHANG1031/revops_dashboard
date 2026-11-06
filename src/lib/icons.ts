@@ -20,6 +20,7 @@ import {
   Scale,
   ShieldAlert,
   SlidersHorizontal,
+  Sparkles,
   Target,
   TrendingUp,
   Truck,
@@ -48,7 +49,7 @@ export const PAGE_META: Record<string, PageMeta> = {
   },
   '/company': {
     path: '/company',
-    label: 'Company & Network Profile',
+    label: 'Company Overview',
     icon: Building2,
     question: 'How big are we, where do we operate, and what drives revenue?',
   },
@@ -58,9 +59,15 @@ export const PAGE_META: Record<string, PageMeta> = {
     icon: LayoutDashboard,
     question: 'Are we on plan — and what needs action this week?',
   },
+  '/pipeline': {
+    path: '/pipeline',
+    label: 'Sales Pipeline',
+    icon: GitBranch,
+    question: 'Where does commercial pipeline sit — and what is converting?',
+  },
   '/lifecycle': {
     path: '/lifecycle',
-    label: 'Revenue Flow',
+    label: 'Revenue Lifecycle',
     icon: Workflow,
     question: 'Where does value stall between contract and cash?',
   },
@@ -70,15 +77,39 @@ export const PAGE_META: Record<string, PageMeta> = {
     icon: Scale,
     question: 'Do expected charges, billing and revenue agree — and why not?',
   },
+  '/collections': {
+    path: '/collections',
+    label: 'Collections & AR',
+    icon: HandCoins,
+    question: 'How much cash did we collect — and what AR is overdue?',
+  },
   '/forecasting': {
     path: '/forecasting',
-    label: 'Revenue Forecasting',
+    label: 'Revenue Forecast',
     icon: ChartNoAxesCombined,
-    question: 'What revenue should we expect forward — and where are we off plan?',
+    question: 'How much revenue can we expect, and will we meet our target?',
+  },
+  '/forecasting/scenarios': {
+    path: '/forecasting/scenarios',
+    label: 'Scenario Planning',
+    icon: SlidersHorizontal,
+    question: 'If drivers change, how do revenue and margin shift?',
+  },
+  '/forecasting/accuracy': {
+    path: '/forecasting/accuracy',
+    label: 'Forecast Accuracy',
+    icon: Target,
+    question: 'How accurate were past forecasts — and where did error come from?',
+  },
+  '/forecasting/gap': {
+    path: '/forecasting/gap',
+    label: 'Revenue Gap Analysis',
+    icon: TrendingUp,
+    question: 'Where does Forecast vs Target gap come from — and what closes it?',
   },
   '/customers': {
     path: '/customers',
-    label: 'Portfolio',
+    label: 'Customer Portfolio',
     icon: UsersRound,
     question: 'Which customers create value — and which put revenue at risk?',
   },
@@ -88,11 +119,59 @@ export const PAGE_META: Record<string, PageMeta> = {
     icon: Users,
     question: 'What is happening inside this one customer account?',
   },
+  '/customers/risk': {
+    path: '/customers/risk',
+    label: 'Risk & Retention',
+    icon: ShieldAlert,
+    question: 'Which customers are at risk of churn — and why?',
+  },
+  '/customers/growth': {
+    path: '/customers/growth',
+    label: 'Growth Opportunities',
+    icon: Sparkles,
+    question: 'Which existing customers have expansion potential?',
+  },
   '/unit-economics': {
     path: '/unit-economics',
-    label: 'Profitability',
+    label: 'Unit Economics',
     icon: Wallet,
     question: 'What do we earn per package, and where does margin leak?',
+  },
+  '/profitability/unit': {
+    path: '/profitability/unit',
+    label: 'Unit Economics',
+    icon: Wallet,
+    question: 'What do we earn per package, and where does margin leak?',
+  },
+  '/profitability/customer': {
+    path: '/profitability/customer',
+    label: 'Customer Profitability',
+    icon: ChartPie,
+    question: 'Which customers create contribution profit — and which compress margin?',
+  },
+  '/profitability/network': {
+    path: '/profitability/network',
+    label: 'Network Profitability',
+    icon: MapPinned,
+    question: 'Which metros, stations and services are profitable?',
+  },
+  '/sales-compensation': {
+    path: '/sales-compensation',
+    label: 'Commission Overview',
+    icon: Percent,
+    question: 'What commission was earned, approved and paid — vs quota?',
+  },
+  '/sales-compensation/audit': {
+    path: '/sales-compensation/audit',
+    label: 'Commission Audit',
+    icon: FileWarning,
+    question: 'Do calculated commissions match expected rules and payouts?',
+  },
+  '/sales-compensation/simulator': {
+    path: '/sales-compensation/simulator',
+    label: 'Plan Simulator',
+    icon: SlidersHorizontal,
+    question: 'How would plan changes affect payout and company cost?',
   },
   '/actions': {
     path: '/actions',
@@ -100,25 +179,38 @@ export const PAGE_META: Record<string, PageMeta> = {
     icon: ListChecks,
     question: 'What should we do next — and who owns it?',
   },
-  '/sales-compensation': {
-    path: '/sales-compensation',
-    label: 'Sales Compensation',
-    icon: Percent,
-    question: 'Are commissions calculated, paid, and auditable — and what if the plan changes?',
+  '/adhoc': {
+    path: '/adhoc',
+    label: 'Ad-hoc Analysis',
+    icon: DatabaseZap,
+    question: 'What temporary cut of the data do I need for research?',
   },
 }
 
 export const PAGE_ORDER = [
   '/executive',
+  '/company',
+  '/pipeline',
   '/lifecycle',
   '/reconciliation',
-  '/unit-economics',
+  '/collections',
   '/forecasting',
+  '/forecasting/scenarios',
+  '/forecasting/accuracy',
+  '/forecasting/gap',
   '/customers',
   '/customer-360',
+  '/customers/risk',
+  '/customers/growth',
+  '/profitability/unit',
+  '/profitability/customer',
+  '/profitability/network',
   '/sales-compensation',
+  '/sales-compensation/audit',
+  '/sales-compensation/simulator',
   '/actions',
-  '/company',
+  '/adhoc',
+  '/unit-economics',
   '/',
 ]
 
@@ -130,32 +222,104 @@ function navItem(path: string): NavItem {
   return { path, label: m.label, icon: m.icon, question: m.question }
 }
 
+/**
+ * Level-1 Business Modules → Level-2 Analysis Pages
+ * IA: Monitor → Diagnose → Forecast → Act
+ */
 export const NAV_MODULES: NavModule[] = [
-  { id: 'executive', label: 'Executive Command Center', icon: LayoutDashboard, path: '/executive' },
   {
-    id: 'revenue-performance',
-    label: 'Revenue Performance',
+    id: 'business-overview',
+    label: 'Business Overview',
+    icon: Building2,
+    children: [navItem('/company'), navItem('/executive')],
+  },
+  {
+    id: 'revenue-operations',
+    label: 'Revenue Operations',
     icon: BadgeDollarSign,
-    children: [navItem('/lifecycle'), navItem('/reconciliation'), navItem('/unit-economics')],
+    children: [
+      navItem('/pipeline'),
+      navItem('/lifecycle'),
+      navItem('/reconciliation'),
+      navItem('/collections'),
+    ],
+  },
+  {
+    id: 'forecasting',
+    label: 'Forecasting & Planning',
+    icon: ChartNoAxesCombined,
+    children: [
+      navItem('/forecasting'),
+      navItem('/forecasting/scenarios'),
+      navItem('/forecasting/accuracy'),
+      navItem('/forecasting/gap'),
+    ],
   },
   {
     id: 'customer-intelligence',
     label: 'Customer Intelligence',
     icon: UsersRound,
-    path: '/customers',
+    children: [
+      navItem('/customers'),
+      navItem('/customer-360'),
+      navItem('/customers/risk'),
+      navItem('/customers/growth'),
+    ],
   },
-  { id: 'forecasting', label: 'Revenue Forecasting', icon: ChartNoAxesCombined, path: '/forecasting' },
-  { id: 'sales-compensation', label: 'Sales Compensation', icon: Percent, path: '/sales-compensation' },
-  { id: 'actions', label: 'Action Center', icon: ListChecks, path: '/actions' },
-  { id: 'company', label: 'Company & Network Profile', icon: Building2, path: '/company' },
+  {
+    id: 'profitability',
+    label: 'Profitability',
+    icon: Wallet,
+    children: [
+      navItem('/profitability/unit'),
+      navItem('/profitability/customer'),
+      navItem('/profitability/network'),
+    ],
+  },
+  {
+    id: 'sales-compensation',
+    label: 'Sales Compensation',
+    icon: Percent,
+    children: [
+      navItem('/sales-compensation'),
+      navItem('/sales-compensation/audit'),
+      navItem('/sales-compensation/simulator'),
+    ],
+  },
+  {
+    id: 'action-insights',
+    label: 'Action & Insights',
+    icon: ListChecks,
+    children: [navItem('/actions'), navItem('/adhoc')],
+  },
 ]
 
-/** Sidebar / module sub-nav: Revenue Performance child routes */
-export const REVENUE_PERFORMANCE_NAV: NavItem[] =
-  NAV_MODULES.find((m) => m.id === 'revenue-performance')?.children ?? []
+export const REVENUE_OPS_NAV: NavItem[] =
+  NAV_MODULES.find((m) => m.id === 'revenue-operations')?.children ?? []
+export const FORECASTING_NAV: NavItem[] =
+  NAV_MODULES.find((m) => m.id === 'forecasting')?.children ?? []
+export const CUSTOMER_NAV: NavItem[] =
+  NAV_MODULES.find((m) => m.id === 'customer-intelligence')?.children ?? []
+export const PROFITABILITY_NAV: NavItem[] =
+  NAV_MODULES.find((m) => m.id === 'profitability')?.children ?? []
+export const COMPENSATION_NAV: NavItem[] =
+  NAV_MODULES.find((m) => m.id === 'sales-compensation')?.children ?? []
+export const ACTION_NAV: NavItem[] =
+  NAV_MODULES.find((m) => m.id === 'action-insights')?.children ?? []
+
+/** @deprecated use REVENUE_OPS_NAV */
+export const REVENUE_PERFORMANCE_NAV: NavItem[] = REVENUE_OPS_NAV
 
 export function pageMeta(path: string): PageMeta | undefined {
   return PAGE_META[path]
+}
+
+export function moduleForPath(pathname: string): NavModule | undefined {
+  return NAV_MODULES.find(
+    (m) =>
+      m.path === pathname ||
+      m.children?.some((c) => c.path === pathname || pathname.startsWith(c.path + '/')),
+  )
 }
 
 /** Module icons — each maps to one business concept only */

@@ -34,6 +34,8 @@ import { computeRecognizedRevenue } from '@/calc/recognizedRevenue'
 import { DrilldownLink } from '@/components/common/DrilldownLink'
 import { shortLabel } from '@/lib/labels'
 import { PageHeader } from '@/components/common/PageHeader'
+import { ModuleSubNav } from '@/components/layout/ModuleSubNav'
+import { CUSTOMER_NAV } from '@/lib/icons'
 import { InfoTip } from '@/components/common/StatusIndicator'
 import { filterExceptions } from '@/lib/filters'
 import { formatCurrency, formatCurrencyPrecise, formatNumber, formatPercent } from '@/lib/money'
@@ -214,6 +216,7 @@ export function CustomerIntelligence() {
 
   return (
     <div className="space-y-5">
+      <ModuleSubNav items={CUSTOMER_NAV} />
       <PageHeader
         path="/customers"
         title="Customer Portfolio"

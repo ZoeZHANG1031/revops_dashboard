@@ -33,6 +33,10 @@ export interface PlanSimParams {
   expansionBonusPct: number
   clawbackCreditRate: number
   marginIncentiveRate: number
+  /** Scales quota denominator: attainment = eligible / (quota × (1 + adj/100)) */
+  quotaAdjustmentPct: number
+  /** Minimum contribution margin % for residual revenue eligibility; 0 = off */
+  minimumMarginEligibilityPct: number
 }
 
 export const DEFAULT_SIM_PARAMS: PlanSimParams = {
@@ -48,6 +52,8 @@ export const DEFAULT_SIM_PARAMS: PlanSimParams = {
   expansionBonusPct: 0.005,
   clawbackCreditRate: 0.6,
   marginIncentiveRate: 0,
+  quotaAdjustmentPct: 0,
+  minimumMarginEligibilityPct: 0,
 }
 
 function repMatches(
@@ -111,12 +117,80 @@ export interface CompKpis {
   earned: number
   approved: number
   paid: number
+  /** @deprecated Use approvedUnpaid — kept for smoke/compat */
   unpaid: number
+  pendingApproval: number
+  approvedUnpaid: number
+  rejected: number
+  /** Earned Commission / Eligible Revenue */
+  effectiveCommissionRatePct: number | null
+  /** Simple average of rep×period attainment */
   avgQuotaAttainmentPct: number | null
+  /** Quota-weighted average attainment */
+  weightedQuotaAttainmentPct: number | null
+  attainmentBasis: 'simple_average' | 'quota_weighted'
   commissionCostPctOfEligible: number | null
   eligibleRevenue: number
   openAuditExceptions: number
   openAuditExposure: number
+}
+
+export type CommissionStatusBucket =
+  | 'Pending Approval'
+  | 'Approved Unpaid'
+  | 'Paid'
+  | 'Rejected'
+
+export interface CommissionStatusBreakdownRow {
+  status: CommissionStatusBucket
+  amount: number
+  entryCount: number
+}
+
+/**
+ * Lifecycle bridge on the same ledger entry set (period filter = Commission Period).
+ * Pending Approval = earned on Pending rows (excl. Rejected).
+ * Approved Unpaid = approved − paid on Approved rows.
+ * Rejected = earned on Rejected rows (excluded from Pending).
+ */
+export function computeCommissionStatusBreakdown(
+  data: DataStore,
+  filters: GlobalFilters,
+  local: CompLocalFilters = { repIds: [], teams: [] },
+): CommissionStatusBreakdownRow[] {
+  const ledger = filterCommissionLedger(data, filters, local)
+  let pending = 0
+  let pendingN = 0
+  let approved = 0
+  let approvedUnpaidN = 0
+  let paid = 0
+  let paidN = 0
+  let rejected = 0
+  let rejectedN = 0
+  for (const L of ledger) {
+    if (L.approval_status === 'Rejected') {
+      rejected = money(rejected + L.commission_earned)
+      rejectedN++
+      continue
+    }
+    if (L.approval_status === 'Pending') {
+      pending = money(pending + L.commission_earned)
+      pendingN++
+      continue
+    }
+    // Approved — company Approved Unpaid = Σapproved − Σpaid (same as KPI)
+    approved = money(approved + L.approved_amount)
+    paid = money(paid + L.paid_amount)
+    if (L.paid_amount > 0.005) paidN++
+    if (money(Math.max(0, L.approved_amount - L.paid_amount)) > 0.005) approvedUnpaidN++
+  }
+  const approvedUnpaid = money(Math.max(0, approved - paid))
+  return [
+    { status: 'Pending Approval', amount: pending, entryCount: pendingN },
+    { status: 'Approved Unpaid', amount: approvedUnpaid, entryCount: approvedUnpaidN },
+    { status: 'Paid', amount: paid, entryCount: paidN },
+    { status: 'Rejected', amount: rejected, entryCount: rejectedN },
+  ]
 }
 
 export function computeCompKpis(
@@ -126,9 +200,22 @@ export function computeCompKpis(
 ): CompKpis {
   const ledger = filterCommissionLedger(data, filters, local)
   const earned = sumMoney(ledger.map((L) => L.commission_earned))
-  const approved = sumMoney(ledger.map((L) => L.approved_amount))
+  const approved = sumMoney(
+    ledger.filter((L) => L.approval_status === 'Approved').map((L) => L.approved_amount),
+  )
   const paid = sumMoney(ledger.map((L) => L.paid_amount))
-  const unpaid = money(Math.max(0, approved - paid))
+  const pendingApproval = sumMoney(
+    ledger
+      .filter((L) => L.approval_status === 'Pending')
+      .map((L) => L.commission_earned),
+  )
+  const rejected = sumMoney(
+    ledger
+      .filter((L) => L.approval_status === 'Rejected')
+      .map((L) => L.commission_earned),
+  )
+  const approvedUnpaid = money(Math.max(0, approved - paid))
+  const unpaid = approvedUnpaid
 
   const eligibleRevenue = sumMoney(
     ledger
@@ -136,7 +223,7 @@ export function computeCompKpis(
       .map((L) => Math.max(0, L.basis_amount)),
   )
 
-  // Attainment: average across rep×period in window with quota
+  // Attainment: simple average + quota-weighted across rep×period in window
   const quotas = data.salesQuotas.filter(
     (q) =>
       periodInRange(q.period, filters.startPeriod, filters.endPeriod) &&
@@ -149,14 +236,23 @@ export function computeCompKpis(
     eligibleByRepPeriod.set(k, money((eligibleByRepPeriod.get(k) ?? 0) + Math.max(0, L.basis_amount)))
   }
   const attainments: number[] = []
+  let weightedSum = 0
+  let quotaWeight = 0
   for (const q of quotas) {
     const actual = eligibleByRepPeriod.get(`${q.rep_id}|${q.period}`) ?? 0
-    if (q.quota_amount > 0) attainments.push((actual / q.quota_amount) * 100)
+    if (q.quota_amount > 0) {
+      const a = (actual / q.quota_amount) * 100
+      attainments.push(a)
+      weightedSum += a * q.quota_amount
+      quotaWeight += q.quota_amount
+    }
   }
   const avgQuotaAttainmentPct =
     attainments.length > 0
       ? money(attainments.reduce((a, b) => a + b, 0) / attainments.length)
       : null
+  const weightedQuotaAttainmentPct =
+    quotaWeight > 0 ? money(weightedSum / quotaWeight) : null
 
   const audits = filterCommissionAudits(data, filters, local).filter(
     (a) => a.status === 'Open' || a.status === 'Investigating',
@@ -167,7 +263,13 @@ export function computeCompKpis(
     approved,
     paid,
     unpaid,
+    pendingApproval,
+    approvedUnpaid,
+    rejected,
+    effectiveCommissionRatePct: pct(earned, eligibleRevenue),
     avgQuotaAttainmentPct,
+    weightedQuotaAttainmentPct,
+    attainmentBasis: 'simple_average',
     commissionCostPctOfEligible: pct(earned, eligibleRevenue),
     eligibleRevenue,
     openAuditExceptions: audits.length,
@@ -224,9 +326,15 @@ export interface RepPerformanceRow {
   earned: number
   approved: number
   paid: number
+  pendingApproval: number
+  effectiveCommissionRatePct: number | null
+  revenuePerCommissionDollar: number | null
+  activeAccounts: number
   winRate: number | null
   avgSalesCycle: number | null
+  avgDealSize: number | null
   openAudits: number
+  appliedPlanVersions: string
 }
 
 export function computeRepPerformance(
@@ -263,20 +371,33 @@ export function computeRepPerformance(
         earned: 0,
         approved: 0,
         paid: 0,
+        pendingApproval: 0,
+        effectiveCommissionRatePct: null,
+        revenuePerCommissionDollar: null,
+        activeAccounts: 0,
         winRate: null,
         avgSalesCycle: null,
+        avgDealSize: null,
         openAudits: 0,
+        appliedPlanVersions: '',
       }
       byRep.set(repId, row)
     }
     return row
   }
 
+  const accountsByRep = new Map<string, Set<string>>()
+  const planVersionsByRep = new Map<string, Set<string>>()
+  const wonDealSizes = new Map<string, number[]>()
+
   for (const L of ledger) {
     const row = ensure(L.rep_id)
     row.earned = money(row.earned + L.commission_earned)
     row.approved = money(row.approved + L.approved_amount)
     row.paid = money(row.paid + L.paid_amount)
+    if (L.approval_status === 'Pending') {
+      row.pendingApproval = money(row.pendingApproval + L.commission_earned)
+    }
     if (L.eligibility_type === 'Revenue' || L.eligibility_type === 'Expansion') {
       row.eligibleRevenue = money(row.eligibleRevenue + Math.max(0, L.basis_amount))
     }
@@ -287,6 +408,14 @@ export function computeRepPerformance(
       row.closedWonValue = money(row.closedWonValue + L.basis_amount)
       row.newCustomerRevenue = money(row.newCustomerRevenue + L.basis_amount)
     }
+    if (L.customer_id) {
+      const set = accountsByRep.get(L.rep_id) ?? new Set()
+      set.add(L.customer_id)
+      accountsByRep.set(L.rep_id, set)
+    }
+    const pv = planVersionsByRep.get(L.rep_id) ?? new Set()
+    pv.add(L.plan_version_id)
+    planVersionsByRep.set(L.rep_id, pv)
   }
 
   for (const q of data.salesQuotas) {
@@ -317,7 +446,12 @@ export function computeRepPerformance(
     }
     if (!repId || !repMatches(data, repId, local)) continue
     const st = oppStats.get(repId) ?? { won: 0, lost: 0, cycles: [] }
-    if (o.stage === 'Closed Won') st.won++
+    if (o.stage === 'Closed Won') {
+      st.won++
+      const sizes = wonDealSizes.get(repId) ?? []
+      sizes.push(o.opportunity_value)
+      wonDealSizes.set(repId, sizes)
+    }
     if (o.stage === 'Closed Lost') st.lost++
     if (o.sales_cycle_days != null) st.cycles.push(o.sales_cycle_days)
     oppStats.set(repId, st)
@@ -331,6 +465,9 @@ export function computeRepPerformance(
       st.cycles.length > 0
         ? money(st.cycles.reduce((a, b) => a + b, 0) / st.cycles.length)
         : null
+    const deals = wonDealSizes.get(repId) ?? []
+    row.avgDealSize =
+      deals.length > 0 ? money(deals.reduce((a, b) => a + b, 0) / deals.length) : null
   }
 
   const audits = filterCommissionAudits(data, filters, local)
@@ -341,6 +478,11 @@ export function computeRepPerformance(
 
   for (const row of byRep.values()) {
     row.quotaAttainmentPct = pct(row.eligibleRevenue, row.quota)
+    row.effectiveCommissionRatePct = pct(row.earned, row.eligibleRevenue)
+    row.revenuePerCommissionDollar =
+      row.earned > 0.005 ? money(row.eligibleRevenue / row.earned) : null
+    row.activeAccounts = accountsByRep.get(row.repId)?.size ?? 0
+    row.appliedPlanVersions = [...(planVersionsByRep.get(row.repId) ?? [])].sort().join(', ')
   }
 
   return [...byRep.values()].sort((a, b) => b.earned - a.earned)
@@ -384,30 +526,177 @@ export function computeCustomerCommission(
   }
 }
 
+export const UNASSIGNED_COMMISSION_REP_ID = '__UNASSIGNED__'
+
+export interface SimulatorRepImpact {
+  repId: string
+  repName: string
+  team: string
+  eligibleRevenue: number
+  quotaAttainmentPct: number | null
+  current: number
+  proposed: number
+  delta: number
+  deltaPct: number | null
+  primaryChangeDriver: string
+  unassigned: boolean
+}
+
+export interface SimulatorWaterfallStep {
+  key: string
+  label: string
+  amount: number
+}
+
 export interface SimulatorResult {
   disclaimer: string
+  /** Alias kept for tests — Current Plan Earned Commission */
   currentPayout: number
   proposedPayout: number
+  currentPlanEarned: number
+  proposedPlanEarned: number
   delta: number
+  unassignedCurrent: number
+  unassignedProposed: number
   currentCostPct: number | null
   proposedCostPct: number | null
   eligibleRevenue: number
   /** Contribution after commission — illustrative; does not rewrite Unit Economics */
   contributionAfterCommissionCurrent: number | null
   contributionAfterCommissionProposed: number | null
-  byRep: {
-    repId: string
-    repName: string
-    current: number
-    proposed: number
-    delta: number
-  }[]
+  waterfall: SimulatorWaterfallStep[]
+  byRep: SimulatorRepImpact[]
   winners: string[]
   losers: string[]
+  sumRepDelta: number
+}
+
+function marginKicker(
+  rate: number,
+  contributionProfit: number | null,
+): number {
+  if (rate <= 0 || contributionProfit == null || contributionProfit <= 0) return 0
+  return money(contributionProfit * rate)
+}
+
+/** Recompute commission on one eligibility set under a param set (no margin kicker). */
+function simulateEligibilityPayout(
+  data: DataStore,
+  elig: DataStore['commissionEligibility'],
+  attainRP: Map<string, number>,
+  params: PlanSimParams,
+): { total: number; byRep: Map<string, number>; byType: Map<string, number> } {
+  const byRep = new Map<string, number>()
+  const byType = new Map<string, number>()
+  let total = 0
+  const capLeft = new Map<string, number | null>()
+
+  for (const e of elig) {
+    const attain = attainRP.get(`${e.rep_id}|${e.period}`) ?? 0
+    const mult =
+      e.eligibility_type === 'Clawback' || e.eligibility_type === 'Bonus'
+        ? 1
+        : simAccelerator(params, attain)
+
+    let baseRate = 0
+    let basis = e.basis_amount
+    let typeKey = e.eligibility_type
+    if (e.eligibility_type === 'New Acquisition') {
+      baseRate = params.newAcquisitionRate
+      typeKey = 'Acquisition'
+    } else if (e.eligibility_type === 'Expansion') {
+      baseRate = params.expansionRate + params.expansionBonusPct
+      typeKey = 'Expansion'
+    } else if (e.eligibility_type === 'Revenue') {
+      baseRate = params.baseRevenueRate
+      typeKey = 'BaseRate'
+    } else if (e.eligibility_type === 'Bonus') {
+      basis = params.newCustomerBonus
+      baseRate = 1
+      typeKey = 'Bonus'
+    } else if (e.eligibility_type === 'Clawback') {
+      const version = pickVersion(data, e.period)
+      const credits =
+        version.clawback_credit_rate > 0
+          ? Math.abs(e.basis_amount) / version.clawback_credit_rate
+          : 0
+      basis = -money(credits * params.clawbackCreditRate)
+      baseRate = 1
+      typeKey = 'Clawback'
+    }
+
+    const capKey = `${e.rep_id}|${e.period}`
+    if (!capLeft.has(capKey)) capLeft.set(capKey, params.commissionCap)
+    const { earned } = computeLineCommission({
+      basis,
+      baseRate,
+      acceleratorMult: mult,
+      capRemaining: capLeft.get(capKey) ?? null,
+    })
+    if (params.commissionCap != null) {
+      capLeft.set(capKey, money(Math.max(0, (capLeft.get(capKey) ?? 0) - earned)))
+    }
+
+    total = money(total + earned)
+    byRep.set(e.rep_id, money((byRep.get(e.rep_id) ?? 0) + earned))
+    byType.set(typeKey, money((byType.get(typeKey) ?? 0) + earned))
+  }
+
+  return { total, byRep, byType }
+}
+
+function primaryDriverLabel(
+  currentParams: PlanSimParams,
+  proposed: PlanSimParams,
+): string {
+  const diffs: { label: string; mag: number }[] = [
+    {
+      label: 'Base Rate',
+      mag: Math.abs(proposed.baseRevenueRate - currentParams.baseRevenueRate),
+    },
+    {
+      label: 'Acquisition Rate',
+      mag: Math.abs(proposed.newAcquisitionRate - currentParams.newAcquisitionRate),
+    },
+    {
+      label: 'Expansion Rate',
+      mag: Math.abs(
+        proposed.expansionRate +
+          proposed.expansionBonusPct -
+          (currentParams.expansionRate + currentParams.expansionBonusPct),
+      ),
+    },
+    {
+      label: 'Accelerator',
+      mag:
+        Math.abs(proposed.accelerator100 - currentParams.accelerator100) +
+        Math.abs(proposed.accelerator120 - currentParams.accelerator120),
+    },
+    {
+      label: 'Bonus',
+      mag: Math.abs(proposed.newCustomerBonus - currentParams.newCustomerBonus),
+    },
+    {
+      label: 'Clawback',
+      mag: Math.abs(proposed.clawbackCreditRate - currentParams.clawbackCreditRate),
+    },
+    {
+      label: 'Cap',
+      mag: Math.abs((proposed.commissionCap ?? 0) - (currentParams.commissionCap ?? 0)),
+    },
+    {
+      label: 'Margin Incentive',
+      mag: Math.abs(proposed.marginIncentiveRate - currentParams.marginIncentiveRate),
+    },
+  ]
+  diffs.sort((a, b) => b.mag - a.mag)
+  if (!diffs[0] || diffs[0].mag < 1e-9) return 'No change'
+  return diffs[0].label
 }
 
 /**
  * Historical backtest of proposed plan vs current ledger earned.
+ * Company-level margin kicker is Explicit Unassigned — never silently inflated into totals.
  * Does not overwrite paid history. Not a forecast of future sales lift.
  */
 export function simulatePlanChange(
@@ -431,7 +720,6 @@ export function simulatePlanChange(
       .map((e) => Math.max(0, e.basis_amount)),
   )
 
-  // Attainment from eligible revenue vs quotas
   const eligRevRP = new Map<string, number>()
   for (const e of elig) {
     if (e.eligibility_type !== 'Revenue' && e.eligibility_type !== 'Expansion') continue
@@ -439,106 +727,216 @@ export function simulatePlanChange(
     eligRevRP.set(k, money((eligRevRP.get(k) ?? 0) + Math.max(0, e.basis_amount)))
   }
   const attainRP = new Map<string, number>()
+  const quotaByRep = new Map<string, number>()
+  const quotaScale = 1 + params.quotaAdjustmentPct / 100
   for (const q of data.salesQuotas) {
     if (!periodInRange(q.period, filters.startPeriod, filters.endPeriod)) continue
+    if (!repMatches(data, q.rep_id, local)) continue
     const actual = eligRevRP.get(`${q.rep_id}|${q.period}`) ?? 0
+    const adjQuota = q.quota_amount * quotaScale
     attainRP.set(
+      `${q.rep_id}|${q.period}`,
+      adjQuota > 0 ? (actual / adjQuota) * 100 : 0,
+    )
+    quotaByRep.set(q.rep_id, money((quotaByRep.get(q.rep_id) ?? 0) + adjQuota))
+  }
+
+  const currentParams = currentPlanAsSimParams(data)
+  // Current-plan attainment uses unadjusted quotas for fair baseline
+  const currentAttainRP = new Map<string, number>()
+  for (const q of data.salesQuotas) {
+    if (!periodInRange(q.period, filters.startPeriod, filters.endPeriod)) continue
+    if (!repMatches(data, q.rep_id, local)) continue
+    const actual = eligRevRP.get(`${q.rep_id}|${q.period}`) ?? 0
+    currentAttainRP.set(
       `${q.rep_id}|${q.period}`,
       q.quota_amount > 0 ? (actual / q.quota_amount) * 100 : 0,
     )
   }
+  const proposedSim = simulateEligibilityPayout(data, elig, attainRP, params)
+  const currentPlanSim = simulateEligibilityPayout(data, elig, currentAttainRP, currentParams)
 
-  const proposedByRep = new Map<string, number>()
-  let proposedTotal = 0
-  const capLeft = new Map<string, number | null>()
-
-  for (const e of elig) {
-    const attain = attainRP.get(`${e.rep_id}|${e.period}`) ?? 0
-    const mult =
-      e.eligibility_type === 'Clawback' || e.eligibility_type === 'Bonus'
-        ? 1
-        : simAccelerator(params, attain)
-
-    let baseRate = 0
-    let basis = e.basis_amount
-    if (e.eligibility_type === 'New Acquisition') baseRate = params.newAcquisitionRate
-    else if (e.eligibility_type === 'Expansion')
-      baseRate = params.expansionRate + params.expansionBonusPct
-    else if (e.eligibility_type === 'Revenue') baseRate = params.baseRevenueRate
-    else if (e.eligibility_type === 'Bonus') {
-      // Replace flat bonus with sim param when original was new-customer bonus
-      basis = params.newCustomerBonus
-      baseRate = 1
-    } else if (e.eligibility_type === 'Clawback') {
-      // Re-scale clawback from original credit basis using sim clawback rate
-      // Original basis = -credits * oldRate → recover credits and reapply
-      const version = pickVersion(data, e.period)
-      const credits =
-        version.clawback_credit_rate > 0
-          ? Math.abs(e.basis_amount) / version.clawback_credit_rate
-          : 0
-      basis = -money(credits * params.clawbackCreditRate)
-      baseRate = 1
-    }
-
-    const capKey = `${e.rep_id}|${e.period}`
-    if (!capLeft.has(capKey)) capLeft.set(capKey, params.commissionCap)
-    const { earned } = computeLineCommission({
-      basis,
-      baseRate,
-      acceleratorMult: mult,
-      capRemaining: capLeft.get(capKey) ?? null,
-    })
-    if (params.commissionCap != null) {
-      capLeft.set(capKey, money(Math.max(0, (capLeft.get(capKey) ?? 0) - earned)))
-    }
-
-    proposedTotal = money(proposedTotal + earned)
-    proposedByRep.set(e.rep_id, money((proposedByRep.get(e.rep_id) ?? 0) + earned))
-  }
-
-  // Optional margin kicker (demo): add rate × contribution when provided
-  if (params.marginIncentiveRate > 0 && contributionProfit != null && contributionProfit > 0) {
-    const kicker = money(contributionProfit * params.marginIncentiveRate)
-    proposedTotal = money(proposedTotal + kicker)
-  }
-
+  // Ledger is source of truth for Current Plan Earned (production calc).
   const currentByRep = new Map<string, number>()
+  const eligRevByRep = new Map<string, number>()
   for (const L of ledger) {
     currentByRep.set(L.rep_id, money((currentByRep.get(L.rep_id) ?? 0) + L.commission_earned))
+    if (L.eligibility_type === 'Revenue' || L.eligibility_type === 'Expansion') {
+      eligRevByRep.set(
+        L.rep_id,
+        money((eligRevByRep.get(L.rep_id) ?? 0) + Math.max(0, L.basis_amount)),
+      )
+    }
   }
-  const currentPayout = sumMoney(ledger.map((L) => L.commission_earned))
+  const ledgerCurrent = sumMoney(ledger.map((L) => L.commission_earned))
 
-  const repIds = new Set([...currentByRep.keys(), ...proposedByRep.keys()])
-  const byRep = [...repIds].map((repId) => {
+  // Margin kicker: company-level Explicit Unassigned on BOTH sides so default plan Δ = 0.
+  const unassignedCurrent = marginKicker(currentParams.marginIncentiveRate, contributionProfit)
+  const unassignedProposed = marginKicker(params.marginIncentiveRate, contributionProfit)
+
+  const currentPlanEarned = money(ledgerCurrent + unassignedCurrent)
+  const proposedPlanEarned = money(proposedSim.total + unassignedProposed)
+  const delta = money(proposedPlanEarned - currentPlanEarned)
+
+  const driver = primaryDriverLabel(currentParams, params)
+  const repIds = new Set([...currentByRep.keys(), ...proposedSim.byRep.keys()])
+  const byRep: SimulatorRepImpact[] = [...repIds].map((repId) => {
     const rep = data.salesReps.find((r) => r.rep_id === repId)
     const current = currentByRep.get(repId) ?? 0
-    const proposed = proposedByRep.get(repId) ?? 0
+    const proposed = proposedSim.byRep.get(repId) ?? 0
+    const d = money(proposed - current)
+    const eligRev = eligRevByRep.get(repId) ?? 0
+    const quota = quotaByRep.get(repId) ?? 0
     return {
       repId,
       repName: rep?.rep_name ?? repId,
+      team: rep?.team ?? '—',
+      eligibleRevenue: eligRev,
+      quotaAttainmentPct: pct(eligRev, quota),
       current,
       proposed,
-      delta: money(proposed - current),
+      delta: d,
+      deltaPct: current !== 0 ? money((d / Math.abs(current)) * 100) : d !== 0 ? 100 : 0,
+      primaryChangeDriver: Math.abs(d) < 0.005 ? 'Unchanged' : driver,
+      unassigned: false,
     }
-  }).sort((a, b) => b.delta - a.delta)
+  })
+
+  if (unassignedCurrent !== 0 || unassignedProposed !== 0) {
+    const d = money(unassignedProposed - unassignedCurrent)
+    byRep.push({
+      repId: UNASSIGNED_COMMISSION_REP_ID,
+      repName: 'Company Margin Incentive (Unassigned)',
+      team: '—',
+      eligibleRevenue: 0,
+      quotaAttainmentPct: null,
+      current: unassignedCurrent,
+      proposed: unassignedProposed,
+      delta: d,
+      deltaPct:
+        unassignedCurrent !== 0
+          ? money((d / Math.abs(unassignedCurrent)) * 100)
+          : d !== 0
+            ? 100
+            : 0,
+      primaryChangeDriver: Math.abs(d) < 0.005 ? 'Unchanged' : 'Margin Incentive',
+      unassigned: true,
+    })
+  }
+
+  byRep.sort((a, b) => b.delta - a.delta)
+  const sumRepDelta = money(byRep.reduce((a, r) => a + r.delta, 0))
+
+  // Fixed-order sequential attribution for waterfall (interaction residual last).
+  const stepOrder: { key: string; label: string; apply: (p: PlanSimParams) => PlanSimParams }[] = [
+    {
+      key: 'base',
+      label: 'Base Rate Impact',
+      apply: (p) => ({ ...p, baseRevenueRate: params.baseRevenueRate }),
+    },
+    {
+      key: 'acq',
+      label: 'Acquisition Rate Impact',
+      apply: (p) => ({ ...p, newAcquisitionRate: params.newAcquisitionRate }),
+    },
+    {
+      key: 'exp',
+      label: 'Expansion Rate Impact',
+      apply: (p) => ({
+        ...p,
+        expansionRate: params.expansionRate,
+        expansionBonusPct: params.expansionBonusPct,
+      }),
+    },
+    {
+      key: 'accel',
+      label: 'Accelerator Impact',
+      apply: (p) => ({
+        ...p,
+        accelerator100: params.accelerator100,
+        accelerator120: params.accelerator120,
+        acceleratorBelow: params.acceleratorBelow,
+        quotaThresholdPct: params.quotaThresholdPct,
+      }),
+    },
+    {
+      key: 'bonus',
+      label: 'Bonus Impact',
+      apply: (p) => ({ ...p, newCustomerBonus: params.newCustomerBonus }),
+    },
+    {
+      key: 'claw',
+      label: 'Clawback Impact',
+      apply: (p) => ({ ...p, clawbackCreditRate: params.clawbackCreditRate }),
+    },
+    {
+      key: 'cap',
+      label: 'Cap Impact',
+      apply: (p) => ({ ...p, commissionCap: params.commissionCap }),
+    },
+  ]
+
+  const waterfall: SimulatorWaterfallStep[] = [
+    { key: 'current', label: 'Current Plan Earned', amount: currentPlanEarned },
+  ]
+  let runningParams = { ...currentParams }
+  let runningTotal = money(currentPlanSim.total + unassignedCurrent)
+  // Align starting point to ledger+kicker for display; step deltas from eligibility path
+  let prevElig = currentPlanSim.total
+  for (const step of stepOrder) {
+    runningParams = step.apply(runningParams)
+    const next = simulateEligibilityPayout(data, elig, attainRP, runningParams).total
+    const stepDelta = money(next - prevElig)
+    if (Math.abs(stepDelta) >= 0.005) {
+      waterfall.push({ key: step.key, label: step.label, amount: stepDelta })
+    }
+    prevElig = next
+    runningTotal = money(runningTotal + stepDelta)
+  }
+  const marginDelta = money(unassignedProposed - unassignedCurrent)
+  if (Math.abs(marginDelta) >= 0.005) {
+    waterfall.push({ key: 'margin', label: 'Margin Incentive Impact', amount: marginDelta })
+    runningTotal = money(runningTotal + marginDelta)
+  }
+  const residual = money(proposedPlanEarned - (currentPlanEarned + money(
+    waterfall.filter((w) => w.key !== 'current').reduce((a, w) => a + w.amount, 0),
+  )))
+  // Prefer residual that closes ledger vs eligibility baseline gap + interactions
+  if (Math.abs(residual) >= 0.02) {
+    waterfall.push({
+      key: 'residual',
+      label: 'Interaction / Ledger↔Eligibility Residual',
+      amount: residual,
+    })
+  }
+  waterfall.push({ key: 'proposed', label: 'Proposed Plan Earned', amount: proposedPlanEarned })
 
   return {
     disclaimer:
-      'Historical backtest on the same Eligible Revenue / Bookings events. Does not overwrite Paid history. Hypothetical plan change ≠ guaranteed future sales growth.',
-    currentPayout,
-    proposedPayout: proposedTotal,
-    delta: money(proposedTotal - currentPayout),
-    currentCostPct: pct(currentPayout, eligibleRevenue),
-    proposedCostPct: pct(proposedTotal, eligibleRevenue),
+      'Historical backtest on the same Eligible Revenue / Bookings events. Does not overwrite Paid history. Hypothetical plan change ≠ guaranteed future sales growth. Margin incentive is company-level Unassigned.',
+    currentPayout: currentPlanEarned,
+    proposedPayout: proposedPlanEarned,
+    currentPlanEarned,
+    proposedPlanEarned,
+    delta,
+    unassignedCurrent,
+    unassignedProposed,
+    currentCostPct: pct(currentPlanEarned, eligibleRevenue),
+    proposedCostPct: pct(proposedPlanEarned, eligibleRevenue),
     eligibleRevenue,
     contributionAfterCommissionCurrent:
-      contributionProfit != null ? money(contributionProfit - currentPayout) : null,
+      contributionProfit != null ? money(contributionProfit - currentPlanEarned) : null,
     contributionAfterCommissionProposed:
-      contributionProfit != null ? money(contributionProfit - proposedTotal) : null,
+      contributionProfit != null ? money(contributionProfit - proposedPlanEarned) : null,
+    waterfall,
     byRep,
-    winners: byRep.filter((r) => r.delta > 0).slice(0, 5).map((r) => r.repName),
-    losers: byRep.filter((r) => r.delta < 0).slice(-5).reverse().map((r) => r.repName),
+    winners: byRep.filter((r) => !r.unassigned && r.delta > 0).slice(0, 5).map((r) => r.repName),
+    losers: byRep
+      .filter((r) => !r.unassigned && r.delta < 0)
+      .slice(-5)
+      .reverse()
+      .map((r) => r.repName),
+    sumRepDelta,
   }
 }
 
@@ -629,5 +1027,281 @@ export function currentPlanAsSimParams(data: DataStore): PlanSimParams {
     expansionBonusPct: v.expansion_bonus_pct,
     clawbackCreditRate: v.clawback_credit_rate,
     marginIncentiveRate: v.margin_incentive_rate,
+    quotaAdjustmentPct: 0,
+    minimumMarginEligibilityPct: 0,
   }
+}
+
+// ─── Independent Commission Audit (does not copy ledger.commission_earned) ───
+
+export type TransactionAuditStatus =
+  | 'Not Audited'
+  | 'Passed'
+  | 'Flagged'
+  | 'Under Review'
+  | 'Resolved'
+
+export interface TransactionAuditRow {
+  ledgerId: string
+  eligibilityId: string
+  repId: string
+  repName: string
+  customerId: string | null
+  opportunityId: string | null
+  contractId: string | null
+  period: string
+  eligibilityType: string
+  eligibleRevenue: number
+  planVersionId: string
+  expectedCommission: number
+  calculatedCommission: number
+  variance: number
+  auditStatus: TransactionAuditStatus
+  approvalStatus: string
+  paymentStatus: string
+  auditDate: string | null
+  reviewer: string | null
+  formula: string
+  exceptionIds: string[]
+  ruleHits: string[]
+}
+
+export interface AuditModuleKpis {
+  auditCoveragePct: number | null
+  openExceptions: number
+  exceptionExposure: number
+  pendingApproval: number
+  payoutReconciliationDiff: number
+  eligibleEntries: number
+  auditedEntries: number
+}
+
+/** Independent expected amount from plan version rules + eligibility basis (not ledger.earned). */
+export function computeIndependentExpectedCommission(
+  data: DataStore,
+  L: FactCommissionLedger,
+  attainPct: number,
+): { expected: number; formula: string; version: FactCompensationPlanVersion } {
+  const version =
+    data.compensationPlanVersions.find((v) => v.plan_version_id === L.plan_version_id) ??
+    pickVersion(data, L.period)
+  const mult =
+    L.eligibility_type === 'Clawback' || L.eligibility_type === 'Bonus'
+      ? 1
+      : (() => {
+          const tiers = [...version.accelerator_tiers].sort(
+            (a, b) => b.from_attainment_pct - a.from_attainment_pct,
+          )
+          const hit = tiers.find((t) => attainPct >= t.from_attainment_pct)
+          return hit?.rate_multiplier ?? 1
+        })()
+
+  let baseRate = 0
+  let basis = L.basis_amount
+  if (L.eligibility_type === 'New Acquisition') baseRate = version.new_acquisition_rate
+  else if (L.eligibility_type === 'Expansion')
+    baseRate = version.expansion_rate + version.expansion_bonus_pct
+  else if (L.eligibility_type === 'Revenue') baseRate = version.revenue_rate
+  else if (L.eligibility_type === 'Bonus') {
+    baseRate = 1
+    // Prefer plan flat bonus when ledger basis matches bonus shape
+    basis = version.new_customer_bonus
+  } else if (L.eligibility_type === 'Clawback') {
+    baseRate = 1
+    basis = L.basis_amount
+  }
+
+  const { earned } = computeLineCommission({
+    basis,
+    baseRate,
+    acceleratorMult: mult,
+    capRemaining: null,
+  })
+  const formula = `Eligible ${basis.toFixed(2)} × Rate ${baseRate} × Accel ${mult} (plan ${version.version_label}; attain ${attainPct.toFixed(1)}%)`
+  return { expected: earned, formula, version }
+}
+
+export function computeAuditModuleKpis(
+  data: DataStore,
+  filters: GlobalFilters,
+  local: CompLocalFilters = { repIds: [], teams: [] },
+): AuditModuleKpis {
+  const ledger = filterCommissionLedger(data, filters, local)
+  const audits = filterCommissionAudits(data, filters, local)
+  const open = audits.filter((a) => a.status === 'Open' || a.status === 'Investigating')
+  const ledgerIdsWithAudit = new Set(audits.map((a) => a.ledger_id).filter(Boolean) as string[])
+  const auditedEntries = ledger.filter((L) => ledgerIdsWithAudit.has(L.ledger_id)).length
+  const eligibleEntries = ledger.length
+  const kpis = computeCompKpis(data, filters, local)
+
+  // Approved vs sum of payments allocated to ledger in window
+  const approved = kpis.approved
+  const paid = kpis.paid
+  const payoutReconciliationDiff = money(approved - paid - kpis.approvedUnpaid)
+  // Should be ~0 when approvedUnpaid = approved − paid; surface any drift
+
+  return {
+    auditCoveragePct: eligibleEntries > 0 ? pct(auditedEntries, eligibleEntries) : null,
+    openExceptions: open.length,
+    exceptionExposure: sumMoney(open.map((a) => a.financial_impact)),
+    pendingApproval: kpis.pendingApproval,
+    payoutReconciliationDiff,
+    eligibleEntries,
+    auditedEntries,
+  }
+}
+
+export function runCommissionTransactionAudit(
+  data: DataStore,
+  filters: GlobalFilters,
+  local: CompLocalFilters = { repIds: [], teams: [] },
+): TransactionAuditRow[] {
+  const ledger = filterCommissionLedger(data, filters, local)
+  const audits = filterCommissionAudits(data, filters, local)
+  const auditsByLedger = new Map<string, typeof audits>()
+  for (const a of audits) {
+    if (!a.ledger_id) continue
+    const list = auditsByLedger.get(a.ledger_id) ?? []
+    list.push(a)
+    auditsByLedger.set(a.ledger_id, list)
+  }
+
+  const eligRevRP = new Map<string, number>()
+  for (const L of ledger) {
+    if (L.eligibility_type !== 'Revenue' && L.eligibility_type !== 'Expansion') continue
+    const k = `${L.rep_id}|${L.period}`
+    eligRevRP.set(k, money((eligRevRP.get(k) ?? 0) + Math.max(0, L.basis_amount)))
+  }
+  const attainRP = new Map<string, number>()
+  for (const q of data.salesQuotas) {
+    if (!periodInRange(q.period, filters.startPeriod, filters.endPeriod)) continue
+    const actual = eligRevRP.get(`${q.rep_id}|${q.period}`) ?? 0
+    attainRP.set(
+      `${q.rep_id}|${q.period}`,
+      q.quota_amount > 0 ? (actual / q.quota_amount) * 100 : 0,
+    )
+  }
+
+  // Duplicate eligibility detection
+  const eligCounts = new Map<string, number>()
+  for (const L of ledger) {
+    eligCounts.set(L.eligibility_id, (eligCounts.get(L.eligibility_id) ?? 0) + 1)
+  }
+
+  const custOwner = new Map(
+    data.customers.map((c) => {
+      const rep = data.salesReps.find((r) => r.rep_name === c.account_owner)
+      return [c.customer_id, rep?.rep_id ?? ''] as const
+    }),
+  )
+
+  return ledger.map((L) => {
+    const attain = attainRP.get(`${L.rep_id}|${L.period}`) ?? 0
+    const { expected, formula, version } = computeIndependentExpectedCommission(data, L, attain)
+    const variance = money(L.commission_earned - expected)
+    const linked = auditsByLedger.get(L.ledger_id) ?? []
+    const ruleHits: string[] = []
+
+    if ((eligCounts.get(L.eligibility_id) ?? 0) > 1) ruleHits.push('Duplicate Commission')
+    if (Math.abs(variance) > 1) ruleHits.push('Incorrect Rate')
+    if (L.customer_id) {
+      const owner = custOwner.get(L.customer_id)
+      if (owner && owner !== L.rep_id) ruleHits.push('Wrong Sales Attribution')
+    }
+    const expectedMult =
+      L.eligibility_type === 'Clawback' || L.eligibility_type === 'Bonus'
+        ? 1
+        : (() => {
+            const tiers = [...version.accelerator_tiers].sort(
+              (a, b) => b.from_attainment_pct - a.from_attainment_pct,
+            )
+            return tiers.find((t) => attain >= t.from_attainment_pct)?.rate_multiplier ?? 1
+          })()
+    if (Math.abs(L.accelerator_mult - expectedMult) > 0.001) ruleHits.push('Incorrect Accelerator')
+    if (L.approval_status === 'Pending' && L.commission_earned > 0) ruleHits.push('Missing Approval')
+    if (L.eligibility_type === 'Clawback' && L.commission_earned === 0) ruleHits.push('Clawback Mismatch')
+    if (
+      L.approval_status === 'Approved' &&
+      Math.abs(L.paid_amount - L.approved_amount) > 0.5 &&
+      L.paid_amount > 0
+    ) {
+      ruleHits.push('Payout Mismatch')
+    }
+    const day = `${L.period}-15`
+    if (!(version.effective_from <= day && (version.effective_to == null || version.effective_to >= day))) {
+      ruleHits.push('Plan Effective Date')
+    }
+
+    for (const a of linked) {
+      if (!ruleHits.includes(a.audit_type)) ruleHits.push(a.audit_type)
+    }
+
+    let auditStatus: TransactionAuditStatus = 'Not Audited'
+    if (linked.some((a) => a.status === 'Open' || a.status === 'Investigating')) {
+      auditStatus = 'Flagged'
+    } else if (linked.some((a) => a.status === 'Resolved' || a.status === 'Accepted')) {
+      auditStatus = 'Resolved'
+    } else if (linked.length > 0) {
+      auditStatus = 'Under Review'
+    } else if (ruleHits.length === 0) {
+      auditStatus = 'Passed'
+    } else if (ruleHits.length > 0 && Math.abs(variance) <= 1 && !ruleHits.includes('Duplicate Commission')) {
+      // Soft informational hits (e.g. pending approval) without amount variance
+      auditStatus = ruleHits.includes('Missing Approval') ? 'Under Review' : 'Passed'
+    } else {
+      auditStatus = 'Flagged'
+    }
+
+    let paymentStatus = 'Unpaid'
+    if (L.paid_amount <= 0.005) paymentStatus = 'Unpaid'
+    else if (L.paid_amount + 0.01 >= L.approved_amount && L.approved_amount > 0) paymentStatus = 'Paid'
+    else paymentStatus = 'Partial'
+
+    const rep = data.salesReps.find((r) => r.rep_id === L.rep_id)
+    return {
+      ledgerId: L.ledger_id,
+      eligibilityId: L.eligibility_id,
+      repId: L.rep_id,
+      repName: rep?.rep_name ?? L.rep_id,
+      customerId: L.customer_id,
+      opportunityId: L.opportunity_id,
+      contractId: L.contract_id,
+      period: L.period,
+      eligibilityType: L.eligibility_type,
+      eligibleRevenue: Math.max(0, L.basis_amount),
+      planVersionId: L.plan_version_id,
+      expectedCommission: expected,
+      calculatedCommission: L.commission_earned,
+      variance,
+      auditStatus,
+      approvalStatus: L.approval_status,
+      paymentStatus,
+      auditDate: linked[0]?.detected_date ?? null,
+      reviewer: linked[0]?.suggested_owner ?? null,
+      formula,
+      exceptionIds: linked.map((a) => a.audit_id),
+      ruleHits,
+    }
+  })
+}
+
+export function filterLedgerByStatusBucket(
+  data: DataStore,
+  filters: GlobalFilters,
+  local: CompLocalFilters,
+  bucket: CommissionStatusBucket,
+): FactCommissionLedger[] {
+  const ledger = filterCommissionLedger(data, filters, local)
+  return ledger.filter((L) => {
+    if (bucket === 'Rejected') return L.approval_status === 'Rejected'
+    if (bucket === 'Pending Approval') return L.approval_status === 'Pending'
+    if (bucket === 'Paid') return L.paid_amount > 0.005
+    if (bucket === 'Approved Unpaid') {
+      return (
+        L.approval_status === 'Approved' &&
+        money(Math.max(0, L.approved_amount - L.paid_amount)) > 0.005
+      )
+    }
+    return false
+  })
 }
