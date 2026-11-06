@@ -44,6 +44,21 @@ export function formatCurrency(value: number, compact = false): string {
   }).format(value)
 }
 
+/** Axis / chart ticks: $30M, $450K — never $30000k */
+export function formatAxisMoney(value: number): string {
+  const sign = value < 0 ? '−' : ''
+  const a = Math.abs(value)
+  if (a >= 1_000_000) {
+    const m = a / 1_000_000
+    return `${sign}$${m >= 10 ? m.toFixed(0) : m.toFixed(1)}M`
+  }
+  if (a >= 1_000) {
+    const k = a / 1_000
+    return `${sign}$${k >= 100 ? k.toFixed(0) : k.toFixed(k >= 10 ? 0 : 1)}K`
+  }
+  return `${sign}$${Math.round(a)}`
+}
+
 export function formatCurrencyPrecise(value: number): string {
   return new Intl.NumberFormat('en-US', {
     style: 'currency',

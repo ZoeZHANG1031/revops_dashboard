@@ -519,7 +519,7 @@ export function computeGapClosurePlan(
       customerId: r.customerId,
       name: r.customerName,
       revenueAtRisk: r.revenueAtRisk,
-      note: 'Hypothesis — preventing this Scenario RaR would protect the gap from widening (not confirmed loss).',
+      note: 'Hypothesis — preventing this Scenario Revenue Exposure would protect the gap from widening (not confirmed loss).',
     }))
 
   return {
@@ -537,7 +537,7 @@ export function computeGapClosurePlan(
     assumptions: [
       'Volume / rate levers use Existing forecast packages and Existing revenue only (pipeline kept separate).',
       'Each lever is an independent what-if — do not add Volume + Rate + New Logo together (would double-count).',
-      'Expansion / churn lists are Hypothesis rankings from target gaps and health Scenario RaR — not causal guarantees.',
+      'Expansion / churn lists are Hypothesis rankings from target gaps and health Scenario Revenue Exposure — not causal guarantees.',
     ],
   }
 }

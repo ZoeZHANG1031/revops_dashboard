@@ -2,6 +2,7 @@ import { filterBillingLines } from '@/lib/filters'
 import { pkgs } from '@/lib/pricing'
 import { money, sumMoney } from '@/lib/money'
 import type { DataStore, GlobalFilters, RegionCode, ServiceType } from '@/types'
+import { summarizeSteps } from '@/lib/waterfall'
 import { forecastComparability } from './forecastScope'
 import { computeRecognizedRevenue } from './recognizedRevenue'
 
@@ -94,16 +95,17 @@ export function computeVarianceBridge(
     { key: 'actual', label: 'Actual Recognized Revenue', amount: actual },
   ]
 
+  // Attribution uses the canonical waterfall summary — the same function the chart footer uses
+  const summary = summarizeSteps(items, ['forecast', 'actual'])
+  const attributionCoverage = summary.attributionCoverage
   const driverAbs =
     Math.abs(volumeImpact) + Math.abs(priceImpact) + Math.abs(mixImpact) + Math.abs(creditsImpact)
-  const residualAbs = Math.abs(other)
+  const residualAbs = Math.abs(summary.residual)
   const gapAbs = Math.abs(totalGap)
-  const attributionCoverage =
-    driverAbs + residualAbs === 0 ? null : money((driverAbs / (driverAbs + residualAbs)) * 100)
   const attributionQualityWarning =
     gapAbs > 0 && (residualAbs > gapAbs * 0.4 || (driverAbs > 0 && residualAbs > driverAbs))
   const attributionNote = attributionQualityWarning
-    ? 'Attribution Quality Warning: unexplained residual is large vs known drivers (timing, accruals, or missing forecast grain). Residual is retained — not forced to zero.'
+    ? 'The unexplained residual is large relative to known drivers (timing, accruals or missing forecast grain). It is retained, not forced to zero.'
     : 'Forecast + signed driver impacts + residual = Actual. Scope = Existing Customer Forecast only (not Total Business).'
 
   const checkSum = money(volumeImpact + priceImpact + mixImpact + creditsImpact + other)

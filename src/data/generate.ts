@@ -55,6 +55,11 @@ import {
 import { METRO_DEFINITIONS, REGIONS, type MetroDefinition } from './metros'
 import { SeededRng } from './rng'
 import { generateCompensationSlice } from './generateCompensation'
+import {
+  DEMO_NEXT_STEPS,
+  DEMO_STAGE_AGE,
+  DEMO_STAGE_WIN_PROB,
+} from '@/calc/pipelineDemoConfig'
 
 const SEED = 20261031
 export const HISTORY_START = '2024-10'
@@ -65,6 +70,7 @@ const FORECAST_END = '2027-01'
 const TARGET_OCT_2026_PACKAGES = 1_200_000
 
 /** Reference monthly fixed pool (stations + corporate, Oct 2026) — Unit Economics downside stress uses the ratio */
+/** Stress-ratio reference only (Downside ÷ Base = 1.3×); actual monthly pool is in meta */
 export const MONTHLY_FIXED_OPEX_POOL_BASE = 1_000_000
 export const MONTHLY_FIXED_OPEX_POOL_DOWNSIDE = 1_300_000
 
@@ -1049,6 +1055,12 @@ export function generateDataStore(seed = SEED): DataStore {
     }
   })
 
+  const latestFixedPool = r2(
+    costs
+      .filter((c) => c.cost_type === 'Allocated Fixed' && c.accounting_period === HISTORY_END)
+      .reduce((a, c) => a + c.amount, 0),
+  )
+
   // ---- Customer-level risk exceptions (latest period) from realised actuals
   const lastPeriod = HISTORY_END
   plans.forEach((p) => {
@@ -1102,20 +1114,39 @@ export function generateDataStore(seed = SEED): DataStore {
         status: 'Open',
       })
     }
-    if (p.spec.profile === 'at_risk' && prior3.some((x) => x > 0)) {
-      const rev = [0, 1, 2].reduce((a, o) => a + (monthlyCustomer.get(mcKey(cid, addMonths(lastPeriod, -o)))?.rec ?? 0), 0)
-      pushException({
-        exception_type: 'High Risk Customer',
-        customer_id: cid, shipment_id: null, invoice_id: null, billing_line_id: null,
-        expected_amount: r2(rev), actual_amount: r2(rev * 0.7), difference: r2(rev * 0.3),
-        severity: 'Critical',
-        root_cause: 'Composite signals: volume softening, service failures, slow payment',
-        trigger_rule: 'IF health_score < 50 OR (volume trend < 0 AND overdue AR) THEN High Risk Customer', owner: 'Sales',
-        recommended_action: 'Executive QBR; service recovery plan; retention offer',
-        detected_date: `${lastPeriod}-20`, metro: null, service_type: null,
-        financial_impact: r2(rev * 0.3),
-        status: 'Open',
-      })
+    // High Risk Customer — derived ONLY from realised signals (never from the generator's plan profile):
+    // 3-month packages ≤ −15% YoY AND (CM down ≥ 5 pts YoY OR an open overdue invoice).
+    {
+      const sum3 = (offsets: number[], f: 'pkgs' | 'net') =>
+        offsets.reduce((a, o) => a + (monthlyCustomer.get(mcKey(cid, addMonths(lastPeriod, -o)))?.[f] ?? 0), 0)
+      const pk3 = sum3([0, 1, 2], 'pkgs')
+      const pk3Ago = sum3([12, 13, 14], 'pkgs')
+      const net3 = sum3([0, 1, 2], 'net')
+      const net3Ago = sum3([12, 13, 14], 'net')
+      const volYoY = pk3Ago > 0 ? pk3 / pk3Ago - 1 : null
+      const marginDrop = cmNow != null && cmPrev != null && cmNow < cmPrev - 0.05
+      const overdueOpen = exceptions.some((e) => e.customer_id === cid && e.exception_type === 'Overdue AR')
+      if (volYoY != null && volYoY <= -0.15 && (marginDrop || overdueOpen) && net3Ago > net3) {
+        const signals = [
+          `packages ${(volYoY * 100).toFixed(1)}% YoY (3 mo)`,
+          marginDrop ? `CM ${(cmNow! * 100).toFixed(1)}% vs ${(cmPrev! * 100).toFixed(1)}% a year ago` : null,
+          overdueOpen ? 'open overdue invoice' : null,
+        ].filter(Boolean)
+        pushException({
+          exception_type: 'High Risk Customer',
+          customer_id: cid, shipment_id: null, invoice_id: null, billing_line_id: null,
+          expected_amount: r2(net3Ago), actual_amount: r2(net3), difference: r2(net3Ago - net3),
+          severity: volYoY <= -0.3 ? 'Critical' : 'High',
+          root_cause: `Composite signals: ${signals.join('; ')}`,
+          trigger_rule: 'IF 3-mo packages YoY ≤ −15% AND (CM down ≥ 5 pts YoY OR overdue AR open) THEN High Risk Customer',
+          owner: 'Sales',
+          recommended_action: 'Account review to verify cause of decline before any retention offer',
+          detected_date: `${lastPeriod}-20`, metro: null, service_type: null,
+          // Net Billing shortfall vs same 3 months last year (observed, not a forecast of loss)
+          financial_impact: r2(net3Ago - net3),
+          status: 'Open',
+        })
+      }
     }
   })
 
@@ -1139,61 +1170,254 @@ export function generateDataStore(seed = SEED): DataStore {
   const oppRng = new SeededRng(seed ^ 0x1234567)
   let oppSeq = 1
   let oseSeq = 1
-  const stageProb: Record<OpportunityStage, number> = { Lead: 0.1, Qualified: 0.25, Proposal: 0.4, Negotiation: 0.65, 'Closed Won': 1, 'Closed Lost': 0 }
-  const path: OpportunityStage[] = ['Lead', 'Qualified', 'Proposal', 'Negotiation']
-  const addOpp = (o: Omit<FactOpportunity, 'opportunity_id' | 'synthetic'>, reached: OpportunityStage[]) => {
+  const stageProb = DEMO_STAGE_WIN_PROB
+  const openPath: OpportunityStage[] = ['Lead', 'Qualified', 'Proposal', 'Negotiation']
+  const SEGMENTS: Array<'Enterprise' | 'Mid-Market' | 'SMB'> = ['Enterprise', 'Mid-Market', 'SMB']
+  const pickSeg = () => SEGMENTS[oppRng.int(0, 2)]
+  const pickOwner = () => ACCOUNT_OWNERS[oppRng.int(0, ACCOUNT_OWNERS.length - 1)]
+  const pickNextStep = () => DEMO_NEXT_STEPS[oppRng.int(0, DEMO_NEXT_STEPS.length - 1)]
+
+  /** Dwell days in a stage before advancing (demo bands). */
+  const dwellDays = (stage: 'Lead' | 'Qualified' | 'Proposal' | 'Negotiation', forceOverdue: boolean) => {
+    const band = DEMO_STAGE_AGE[stage]
+    if (forceOverdue) return oppRng.int(band.overdueAfter + 1, band.overdueMax)
+    return oppRng.int(band.normalMin, band.normalMax)
+  }
+
+  /**
+   * Emit stage events with controlled dwells. For open opps, `currentAge` is days in current stage as of AS_OF.
+   * created ≤ first entry ≤ … ≤ last entry ≤ asOf (open) or closed_date.
+   */
+  const addOpp = (
+    o: Omit<FactOpportunity, 'opportunity_id' | 'synthetic'>,
+    reached: OpportunityStage[],
+    opts?: { currentAgeDays?: number; overdueTransitions?: Set<string> },
+  ) => {
     const id = `OPP-${pad(oppSeq++)}`
-    opportunities.push({ ...o, opportunity_id: id, synthetic: true } as FactOpportunity)
-    let d = o.created_date
-    const end = o.closed_date ?? AS_OF_DATE
-    const span = Math.max(reached.length, 1)
-    const step = Math.max(3, Math.floor(daysBetween(o.created_date, end) / span))
+    opportunities.push({ ...o, opportunity_id: id, synthetic: true })
+    const terminal = reached[reached.length - 1]
+    const endAnchor = o.closed_date ?? AS_OF_DATE
+
+    // Build entry dates backward from end of path
+    const entryDates: string[] = new Array(reached.length)
+    if (terminal.startsWith('Closed')) {
+      entryDates[reached.length - 1] = o.closed_date ?? endAnchor
+      for (let i = reached.length - 2; i >= 0; i--) {
+        const st = reached[i] as 'Lead' | 'Qualified' | 'Proposal' | 'Negotiation'
+        const d = dwellDays(st, opts?.overdueTransitions?.has(st) ?? oppRng.chance(0.12))
+        entryDates[i] = addDays(entryDates[i + 1], -d)
+      }
+    } else {
+      const curAge =
+        opts?.currentAgeDays ??
+        dwellDays(
+          terminal as 'Lead' | 'Qualified' | 'Proposal' | 'Negotiation',
+          opts?.overdueTransitions?.has(terminal) ?? false,
+        )
+      entryDates[reached.length - 1] = addDays(AS_OF_DATE, -curAge)
+      for (let i = reached.length - 2; i >= 0; i--) {
+        const st = reached[i] as 'Lead' | 'Qualified' | 'Proposal' | 'Negotiation'
+        const d = dwellDays(st, opts?.overdueTransitions?.has(st) ?? oppRng.chance(0.12))
+        entryDates[i] = addDays(entryDates[i + 1], -d)
+      }
+    }
+
+    // Ensure created_date ≤ first stage entry
+    let created = o.created_date
+    if (created > entryDates[0] || !terminal.startsWith('Closed'))
+      created = addDays(entryDates[0], -oppRng.int(0, 5))
+    // Clamp: no future events, monotonic
+    for (let i = 0; i < entryDates.length; i++) {
+      if (entryDates[i] > endAnchor) entryDates[i] = endAnchor
+      if (i > 0 && entryDates[i] < entryDates[i - 1]) entryDates[i] = entryDates[i - 1]
+      if (entryDates[i] < created) entryDates[i] = created
+    }
+
     let prev: OpportunityStage | null = null
     reached.forEach((st, i) => {
-      if (i > 0) d = addDays(d, Math.max(2, Math.round(step * oppRng.float(0.6, 1.2))))
-      if (o.closed_date && d > o.closed_date) d = o.closed_date
-      opportunityStageEvents.push({ event_id: `OSE-${pad(oseSeq++)}`, opportunity_id: id, from_stage: prev, to_stage: st, event_date: d, synthetic: true } as FactOpportunityStageEvent)
+      opportunityStageEvents.push({
+        event_id: `OSE-${pad(oseSeq++)}`,
+        opportunity_id: id,
+        from_stage: prev,
+        to_stage: st,
+        event_date: entryDates[i],
+        synthetic: true,
+      })
       prev = st
     })
+
+    // Patch created_date if we adjusted
+    const row = opportunities[opportunities.length - 1]
+    if (row.created_date !== created) row.created_date = created
+    if (row.closed_date) {
+      row.sales_cycle_days = daysBetween(row.created_date, row.closed_date)
+    }
     return id
   }
+
   const custOpp = new Map<string, string>()
   plans.filter((p) => p.spec.profile === 'new').forEach((p) => {
     const act = p.customer.activation_date
-    const created = addDays(act, -oppRng.int(110, 230))
     const closed = addDays(act, -oppRng.int(25, 60))
+    const created = addDays(closed, -oppRng.int(45, 120))
     const monthlyRev = r2(p.customer.expected_monthly_volume * 5.0)
-    const id = addOpp({
-      customer_id: p.customer.customer_id, prospect_name: p.customer.customer_name, stage: 'Closed Won',
-      opportunity_value: r2(monthlyRev * 24), win_probability: 1, expected_start_date: act,
-      expected_monthly_volume: p.customer.expected_monthly_volume, expected_monthly_revenue: monthlyRev,
-      created_date: created, closed_date: closed, sales_cycle_days: daysBetween(created, closed),
-    }, [...path, 'Closed Won'])
+    const id = addOpp(
+      {
+        customer_id: p.customer.customer_id,
+        prospect_name: p.customer.customer_name,
+        segment: p.customer.segment,
+        stage: 'Closed Won',
+        opportunity_value: r2(monthlyRev * 24),
+        win_probability: 1,
+        expected_close_date: closed,
+        expected_start_date: act,
+        expected_monthly_volume: p.customer.expected_monthly_volume,
+        expected_monthly_revenue: monthlyRev,
+        created_date: created,
+        closed_date: closed,
+        sales_cycle_days: daysBetween(created, closed),
+        owner_name: p.customer.account_owner,
+        next_step: 'Closed — onboarded',
+        next_follow_up_date: closed,
+      },
+      [...openPath, 'Closed Won'],
+    )
     custOpp.set(p.customer.customer_id, id)
   })
+
+  // Closed Lost — every deal has a segment (prospect account), mixed Won/Lost per segment
   for (let i = 0; i < 26; i++) {
+    const segment = SEGMENTS[i % 3]
     const created = addDays('2024-06-01', oppRng.int(0, 700))
     const lostAt = oppRng.int(1, 4)
-    const closed = addDays(created, oppRng.int(40, 180))
+    const closed = addDays(created, oppRng.int(35, 150))
     if (closed > AS_OF_DATE) continue
     const vol = Math.round(oppRng.float(4000, 60000))
-    addOpp({
-      customer_id: null, prospect_name: `${PROSPECT_NAMES[i % PROSPECT_NAMES.length]}${i >= PROSPECT_NAMES.length ? ' II' : ''}`, stage: 'Closed Lost',
-      opportunity_value: r2(vol * 5 * 24), win_probability: 0, expected_start_date: addDays(closed, 45),
-      expected_monthly_volume: vol, expected_monthly_revenue: r2(vol * 5), created_date: created, closed_date: closed,
-      sales_cycle_days: daysBetween(created, closed),
-    }, [...path.slice(0, lostAt), 'Closed Lost'])
+    const expectedClose = closed
+    addOpp(
+      {
+        customer_id: null,
+        prospect_name: `${PROSPECT_NAMES[i % PROSPECT_NAMES.length]}${i >= PROSPECT_NAMES.length ? ' II' : ''}`,
+        segment,
+        stage: 'Closed Lost',
+        opportunity_value: r2(vol * 5 * 24),
+        win_probability: 0,
+        expected_close_date: expectedClose,
+        expected_start_date: addDays(expectedClose, oppRng.int(20, 50)),
+        expected_monthly_volume: vol,
+        expected_monthly_revenue: r2(vol * 5),
+        created_date: created,
+        closed_date: closed,
+        sales_cycle_days: daysBetween(created, closed),
+        owner_name: pickOwner(),
+        next_step: 'Closed lost — no further action',
+        next_follow_up_date: closed,
+      },
+      [...openPath.slice(0, lostAt), 'Closed Lost'],
+    )
   }
-  const openStages: OpportunityStage[] = ['Lead', 'Lead', 'Qualified', 'Qualified', 'Proposal', 'Proposal', 'Negotiation']
+
+  // Open pipeline — realistic stage ages; ~15% overdue in current stage
+  const openStagePattern: OpportunityStage[] = [
+    'Lead',
+    'Lead',
+    'Lead',
+    'Qualified',
+    'Qualified',
+    'Qualified',
+    'Proposal',
+    'Proposal',
+    'Proposal',
+    'Negotiation',
+    'Negotiation',
+  ]
   for (let i = 0; i < 22; i++) {
-    const stage = openStages[i % openStages.length]
-    const created = addDays('2026-01-05', oppRng.int(0, 280))
+    const stage = openStagePattern[i % openStagePattern.length] as
+      | 'Lead'
+      | 'Qualified'
+      | 'Proposal'
+      | 'Negotiation'
+    const band = DEMO_STAGE_AGE[stage]
+    const overdueNow = i % 7 === 0 || i % 11 === 0 // ~15–18% overdue samples
+    const currentAge = overdueNow
+      ? oppRng.int(band.overdueAfter + 1, band.overdueMax)
+      : oppRng.int(band.normalMin, band.normalMax)
     const vol = Math.round(oppRng.float(3000, 70000))
-    addOpp({
-      customer_id: null, prospect_name: PROSPECT_NAMES[(i + 7) % PROSPECT_NAMES.length] + (i >= 17 ? ' Group' : ''), stage,
-      opportunity_value: r2(vol * 5 * 24), win_probability: stageProb[stage], expected_start_date: `${addMonths('2026-11', oppRng.int(0, 6))}-01`,
-      expected_monthly_volume: vol, expected_monthly_revenue: r2(vol * 5), created_date: created, closed_date: null, sales_cycle_days: null,
-    }, path.slice(0, path.indexOf(stage) + 1))
+    const segment = pickSeg()
+    const stageIdx = openPath.indexOf(stage)
+    const closeIn = stage === 'Negotiation' ? oppRng.int(5, 35) : stage === 'Proposal' ? oppRng.int(15, 55) : oppRng.int(25, 90)
+    const expectedClose = addDays(AS_OF_DATE, closeIn - (overdueNow && stage === 'Negotiation' ? oppRng.int(20, 40) : 0))
+    // Some past-expected-close examples
+    const closeAdj =
+      i % 9 === 0 ? addDays(AS_OF_DATE, -oppRng.int(3, 20)) : expectedClose
+    // Service start on/after expected close (demo rule)
+    const expectedStart = addDays(
+      closeAdj < AS_OF_DATE ? AS_OF_DATE : closeAdj,
+      oppRng.int(14, 45),
+    )
+    // Link a few open opps to existing customers (expansion); rest are prospects with segment only
+    const expansion = i % 5 === 0 ? plans[oppRng.int(0, Math.min(40, plans.length - 1))] : null
+    addOpp(
+      {
+        customer_id: expansion?.customer.customer_id ?? null,
+        prospect_name: expansion
+          ? `${expansion.customer.customer_name} — Expansion`
+          : PROSPECT_NAMES[(i + 7) % PROSPECT_NAMES.length] + (i >= 17 ? ' Group' : ''),
+        segment: expansion?.customer.segment ?? segment,
+        stage,
+        opportunity_value: r2(vol * 5 * 24),
+        win_probability: stageProb[stage],
+        expected_close_date: closeAdj,
+        expected_start_date: expectedStart,
+        expected_monthly_volume: vol,
+        expected_monthly_revenue: r2(vol * 5),
+        created_date: addDays(AS_OF_DATE, -120), // adjusted inside addOpp
+        closed_date: null,
+        sales_cycle_days: null,
+        owner_name: expansion?.customer.account_owner ?? pickOwner(),
+        next_step: pickNextStep(),
+        next_follow_up_date: addDays(AS_OF_DATE, oppRng.int(1, 14)),
+      },
+      openPath.slice(0, stageIdx + 1),
+      {
+        currentAgeDays: currentAge,
+        overdueTransitions: overdueNow ? new Set([stage]) : undefined,
+      },
+    )
+  }
+
+  // Recent closes (last ~100 days): signed deals awaiting go-live and recent losses, so pipeline
+  // movement / win rate reflect current CRM activity. Signed prospects have no customer record yet
+  // (go-live after as-of) — they surface as Weighted Pipeline at 100% probability, not as revenue.
+  const RECENT_WINDOW_START = addDays(AS_OF_DATE, -95)
+  for (let i = 0; i < 11; i++) {
+    const won = i % 2 === 0 && i < 10 // 5 won, 6 lost
+    const closed = addDays(RECENT_WINDOW_START, oppRng.int(0, 90))
+    const created = addDays(closed, -oppRng.int(40, 130))
+    const vol = Math.round(oppRng.float(5000, 45000))
+    const expectedStart = addDays(closed < AS_OF_DATE ? AS_OF_DATE : closed, oppRng.int(10, 50))
+    const name = PROSPECT_NAMES[(i * 3 + 2) % PROSPECT_NAMES.length]
+    addOpp(
+      {
+        customer_id: null,
+        prospect_name: `${name} ${won ? 'Logistics' : 'Holdings'}`,
+        segment: SEGMENTS[(i + 1) % 3],
+        stage: won ? 'Closed Won' : 'Closed Lost',
+        opportunity_value: r2(vol * 5 * 24),
+        win_probability: won ? 1 : 0,
+        expected_close_date: closed,
+        expected_start_date: expectedStart,
+        expected_monthly_volume: vol,
+        expected_monthly_revenue: r2(vol * 5),
+        created_date: created,
+        closed_date: closed,
+        sales_cycle_days: daysBetween(created, closed),
+        owner_name: pickOwner(),
+        next_step: won ? 'Signed — onboarding scheduled' : 'Closed lost — no further action',
+        next_follow_up_date: won ? addDays(AS_OF_DATE, oppRng.int(3, 14)) : closed,
+      },
+      won ? [...openPath, 'Closed Won'] : [...openPath.slice(0, oppRng.int(1, 4)), 'Closed Lost'],
+    )
   }
 
   // ---------------------------------------------------------------- forecast snapshots (point-in-time)
@@ -1295,7 +1519,6 @@ export function generateDataStore(seed = SEED): DataStore {
   const baseExistingByCustPeriod = new Map<string, number>()
   for (const f of forecasts) {
     if (f.scenario !== 'Base' || f.forecast_type !== 'Existing') continue
-    if (f.accounting_period <= HISTORY_END) continue
     baseExistingByPeriod.set(
       f.accounting_period,
       (baseExistingByPeriod.get(f.accounting_period) ?? 0) + f.forecast_recognized,
@@ -1308,17 +1531,26 @@ export function generateDataStore(seed = SEED): DataStore {
   const basePipelineByPeriod = new Map<string, number>()
   for (const f of forecasts) {
     if (f.scenario !== 'Base' || f.forecast_type !== 'Pipeline') continue
-    if (f.accounting_period <= HISTORY_END) continue
     basePipelineByPeriod.set(
       f.accounting_period,
       (basePipelineByPeriod.get(f.accounting_period) ?? 0) + f.forecast_recognized,
     )
   }
-  for (const period of forwardPeriods) {
+  // Historical plan months use their own RNG so forward targets are unchanged by this backfill
+  const histTargetRng = new SeededRng((seed ^ 0x48495354) >>> 0)
+  const historicalPlanPeriods = [...new Set(forecasts.map((f) => f.accounting_period))]
+    .filter((p) => p <= HISTORY_END)
+    .sort()
+  const planPeriods = [...historicalPlanPeriods, ...forwardPeriods]
+  for (const period of planPeriods) {
+    const historical = period <= HISTORY_END
+    const rng = historical ? histTargetRng : targetRng
+    const planVersion = historical ? `MP-${period.slice(0, 4)}` : 'MP-2026H2'
+    const planEffective = historical ? `${Number(period.slice(0, 4)) - 1}-12-15` : `${HISTORY_END}-15`
     const baseTotal =
       (baseExistingByPeriod.get(period) ?? 0) + (basePipelineByPeriod.get(period) ?? 0)
     // Stretch 3–9% above Base Total Business with seeded noise — not a fixed multiplier of Forecast alone
-    const stretch = 1.03 + targetRng.next() * 0.06
+    const stretch = 1.03 + rng.next() * 0.06
     const companyTarget = r2(Math.max(baseTotal * stretch, baseTotal + 25_000))
     const companyCmTarget = r2(companyTarget * 0.24)
     revenueTargets.push({
@@ -1328,8 +1560,8 @@ export function generateDataStore(seed = SEED): DataStore {
       target_scope: 'Company',
       target_revenue: companyTarget,
       target_contribution_profit: companyCmTarget,
-      plan_version: 'MP-2026H2',
-      effective_date: `${HISTORY_END}-15`,
+      plan_version: planVersion,
+      effective_date: planEffective,
       synthetic: true,
       disclaimer: planDisclaimer,
     })
@@ -1340,7 +1572,7 @@ export function generateDataStore(seed = SEED): DataStore {
         if (p !== period || custFc <= 0) continue
         const share = custFc / existingBase
         // Customer targets share company stretch but keep independent residual (±2%)
-        const custStretch = stretch * (0.98 + targetRng.next() * 0.04)
+        const custStretch = stretch * (0.98 + rng.next() * 0.04)
         const custTarget = r2(custFc * custStretch)
         revenueTargets.push({
           target_id: `TGT-${cid}-${period}`,
@@ -1349,8 +1581,8 @@ export function generateDataStore(seed = SEED): DataStore {
           target_scope: 'Customer',
           target_revenue: custTarget,
           target_contribution_profit: r2(custTarget * 0.22),
-          plan_version: 'MP-2026H2',
-          effective_date: `${HISTORY_END}-15`,
+          plan_version: planVersion,
+          effective_date: planEffective,
           synthetic: true,
           disclaimer: planDisclaimer,
         })
@@ -1386,8 +1618,12 @@ export function generateDataStore(seed = SEED): DataStore {
       is_synthetic: true,
       disclaimer:
         'All data is synthetic and for demonstration only. Public brand names are illustrative accounts — not claimed customers of any real carrier; no figure is real commercial data.',
-      fixed_opex_pool_monthly_base: MONTHLY_FIXED_OPEX_POOL_BASE,
-      fixed_opex_pool_monthly_downside: MONTHLY_FIXED_OPEX_POOL_DOWNSIDE,
+      // Actual allocated pool in the last closed month (station fixed + corporate overhead both vary by
+      // month); Downside applies the same stress ratio Unit Economics uses.
+      fixed_opex_pool_monthly_base: latestFixedPool,
+      fixed_opex_pool_monthly_downside: r2(
+        (latestFixedPool * MONTHLY_FIXED_OPEX_POOL_DOWNSIDE) / MONTHLY_FIXED_OPEX_POOL_BASE,
+      ),
       fixed_opex_basis:
         'Station fixed cost allocated by each customer’s package share at that station; corporate overhead allocated by company package share. Allocation ≠ incremental customer cost.',
       data_version: `v3.0-seed${seed}`,

@@ -1,10 +1,37 @@
-import { filterBillingLines, filterShipments } from '@/lib/filters'
-import { pkgs } from '@/lib/pricing'
 import { money, pct, sumMoney } from '@/lib/money'
-import type { DataStore, GlobalFilters } from '@/types'
-import { computeRecognizedRevenue } from './recognizedRevenue'
+import type { DataStore, OpportunityStage } from '@/types'
+import {
+  DEMO_NEAR_TERM_BOOKINGS_TARGET_TCV,
+  DEMO_STAGE_AGE,
+  DEMO_STAGE_AGE_NOTE,
+  DEMO_STAGE_PROB_NOTE,
+  DEMO_STAGE_WIN_PROB,
+} from './pipelineDemoConfig'
+export {
+  computeOperationalPipeline,
+  computeUnbilledBacklog,
+  computeActivationSet,
+  computeGrossToNetBridge,
+  computeBillableSplit,
+} from './lifecycleOps'
 
-export function computeSalesPipeline(data: DataStore) {
+function latestStageEntry(
+  data: DataStore,
+  opportunityId: string,
+  stage: OpportunityStage,
+  fallbackCreated: string,
+): string {
+  const ev = data.opportunityStageEvents
+    ?.filter((e) => e.opportunity_id === opportunityId && e.to_stage === stage)
+    .sort((a, b) => b.event_date.localeCompare(a.event_date))[0]
+  return ev?.event_date ?? fallbackCreated
+}
+
+export function computeSalesPipeline(data: DataStore, asOfInput?: string | null) {
+  const asOf = (asOfInput ?? data.meta.as_of_date ?? data.meta.generated_at?.slice(0, 10) ?? '2026-11-05').slice(
+    0,
+    10,
+  )
   const open = data.opportunities.filter((o) => !o.stage.startsWith('Closed'))
   const closedWon = data.opportunities.filter((o) => o.stage === 'Closed Won')
   const closedLost = data.opportunities.filter((o) => o.stage === 'Closed Lost')
@@ -21,19 +48,25 @@ export function computeSalesPipeline(data: DataStore) {
     : null
 
   const stages = ['Lead', 'Qualified', 'Proposal', 'Negotiation', 'Closed Won', 'Closed Lost'] as const
-  /** Stage stock snapshot — NOT a cascading conversion funnel. Amounts need not decrease. */
-  const stageStock = stages.map((stage) => ({
-    stage,
-    count: data.opportunities.filter((o) => o.stage === stage).length,
-    value: sumMoney(
-      data.opportunities.filter((o) => o.stage === stage).map((o) => o.opportunity_value),
-    ),
-    weighted: sumMoney(
-      data.opportunities
-        .filter((o) => o.stage === stage)
-        .map((o) => money(o.opportunity_value * o.win_probability)),
-    ),
-  }))
+  /** Stage stock — Gross + value-weighted avg win prob + Weighted (= Σ value×prob). */
+  const stageStock = stages.map((stage) => {
+    const rows = data.opportunities.filter((o) => o.stage === stage)
+    const value = sumMoney(rows.map((o) => o.opportunity_value))
+    const weighted = sumMoney(rows.map((o) => money(o.opportunity_value * o.win_probability)))
+    const avgWinProb =
+      value > 0 ? weighted / value : rows.length ? rows[0]?.win_probability ?? DEMO_STAGE_WIN_PROB[stage] : null
+    const demoProb = DEMO_STAGE_WIN_PROB[stage]
+    return {
+      stage,
+      count: rows.length,
+      value,
+      weighted,
+      /** Value-weighted average of opportunity win_probability */
+      avgWinProb: avgWinProb == null ? null : Math.round(avgWinProb * 1000) / 1000,
+      demoStageProb: demoProb,
+      labelProbPct: avgWinProb == null ? null : Math.round(avgWinProb * 100),
+    }
+  })
 
   const openStages = ['Lead', 'Qualified', 'Proposal', 'Negotiation'] as const
   const conversionHints = openStages.slice(0, -1).map((stage, i) => {
@@ -43,25 +76,20 @@ export function computeSalesPipeline(data: DataStore) {
     return {
       from: stage,
       to: next,
-      /** Stock ratio only — not cohort conversion; labeled as such in UI */
       stockRatio: from === 0 ? null : pct(to, from),
     }
   })
 
-  // Stage aging from stage events when available; else sales_cycle_days / stages heuristic
-  const asOf = data.meta.generated_at?.slice(0, 10) ?? '2026-10-31'
   const stageAging = openStages.map((stage) => {
+    const band = DEMO_STAGE_AGE[stage]
     const opps = open.filter((o) => o.stage === stage)
     const days = opps.map((o) => {
-      const ev = data.opportunityStageEvents
-        ?.filter((e) => e.opportunity_id === o.opportunity_id && e.to_stage === stage)
-        .sort((a, b) => b.event_date.localeCompare(a.event_date))[0]
-      const start = ev?.event_date ?? o.created_date
+      const start = latestStageEntry(data, o.opportunity_id, stage, o.created_date)
       const t0 = Date.parse(start)
       const t1 = Date.parse(asOf)
       return Number.isFinite(t0) && Number.isFinite(t1)
         ? Math.max(0, Math.round((t1 - t0) / 86400000))
-        : o.sales_cycle_days ?? 0
+        : 0
     })
     const sorted = [...days].sort((a, b) => a - b)
     const avg = days.length ? Math.round(days.reduce((a, b) => a + b, 0) / days.length) : null
@@ -70,27 +98,54 @@ export function computeSalesPipeline(data: DataStore) {
         ? sorted[Math.floor(sorted.length / 2)]
         : Math.round((sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2)
       : null
-    const stalled = days.filter((d) => d >= 45).length
-    return { stage, count: opps.length, avgDays: avg, medianDays: median, stalledCount: stalled }
+    const p75 =
+      sorted.length >= 4
+        ? sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.75) - 1)]
+        : sorted.length
+          ? sorted[sorted.length - 1]
+          : null
+    const oldest = sorted.length ? sorted[sorted.length - 1] : null
+    const overdueCount = days.filter((d) => d > band.overdueAfter).length
+    return {
+      stage,
+      count: opps.length,
+      avgDays: avg,
+      medianDays: median,
+      p75Days: p75,
+      oldestDays: oldest,
+      overdueAfter: band.overdueAfter,
+      overdueCount,
+      overduePct: days.length ? pct(overdueCount, days.length) : null,
+      /** @deprecated use overdueCount — kept for older UI */
+      stalledCount: overdueCount,
+    }
   })
 
-  const pastDueClose = open.filter((o) => o.expected_start_date && o.expected_start_date < asOf).length
+  const pastExpectedStart = open.filter(
+    (o) => o.expected_start_date && o.expected_start_date < asOf,
+  ).length
+  const pastExpectedClose = open.filter(
+    (o) => o.expected_close_date && o.expected_close_date < asOf,
+  ).length
+  const pastDueClose = pastExpectedStart
 
-  // Pipeline coverage vs remaining quarterly bookings target (synthetic: 1.2× last-quarter Closed Won TCV)
-  const recentWonTcv = sumMoney(
-    closedWon
-      .filter((o) => (o.closed_date ?? '').slice(0, 7) >= '2026-07')
-      .map((o) => o.opportunity_value),
+  // Coverage: Weighted TCV of open opps expected to close in next 90d ÷ independent demo bookings target
+  const horizonEnd = (() => {
+    const t = Date.parse(asOf) + 90 * 86400000
+    return new Date(t).toISOString().slice(0, 10)
+  })()
+  const nearTermOpen = open.filter(
+    (o) => o.expected_close_date >= asOf && o.expected_close_date <= horizonEnd,
   )
-  const remainingSalesTarget = money(Math.max(recentWonTcv * 0.35, weightedPipeline * 0.25, 1))
-  const pipelineCoverage = pct(weightedPipeline, remainingSalesTarget)
+  const nearTermWeighted = sumMoney(
+    nearTermOpen.map((o) => money(o.opportunity_value * o.win_probability)),
+  )
+  const remainingSalesTarget = DEMO_NEAR_TERM_BOOKINGS_TARGET_TCV
+  const pipelineCoverage = pct(nearTermWeighted, remainingSalesTarget)
+  const coverageMult = remainingSalesTarget > 0 ? nearTermWeighted / remainingSalesTarget : null
 
-  const segmentOf = (o: (typeof data.opportunities)[0]): string => {
-    if (!o.customer_id) return 'Unassigned (no customer)'
-    const c = data.customers.find((x) => x.customer_id === o.customer_id)
-    return c?.segment ?? 'Unassigned (no customer)'
-  }
-  const segmentKeys = ['Enterprise', 'Mid-Market', 'SMB', 'Unassigned (no customer)'] as const
+  const segmentOf = (o: (typeof data.opportunities)[0]): string => o.segment || 'Unknown'
+  const segmentKeys = ['Enterprise', 'Mid-Market', 'SMB', 'Unknown'] as const
   const winLossBySegment = segmentKeys.map((segment) => {
     const won = closedWon.filter((o) => segmentOf(o) === segment)
     const lost = closedLost.filter((o) => segmentOf(o) === segment)
@@ -100,16 +155,30 @@ export function computeSalesPipeline(data: DataStore) {
       winRate: n ? pct(won.length, n) : null,
       won: won.length,
       lost: lost.length,
+      n,
+      smallSample: n > 0 && n < 5,
       avgDeal: won.length ? money(sumMoney(won.map((o) => o.opportunity_value)) / won.length) : null,
     }
   })
   const segmentClosed = winLossBySegment.reduce((a, r) => a + r.won + r.lost, 0)
+  const unknownClosed = winLossBySegment.find((s) => s.segment === 'Unknown')
+  const segmentCoveragePct =
+    closed.length > 0 ? pct(closed.length - (unknownClosed?.n ?? 0), closed.length) : null
+
+  const openGrossCheck = sumMoney(
+    stageStock.filter((s) => openStages.includes(s.stage as (typeof openStages)[number])).map((s) => s.value),
+  )
+  const openWeightedCheck = sumMoney(
+    stageStock.filter((s) => openStages.includes(s.stage as (typeof openStages)[number])).map((s) => s.weighted),
+  )
 
   return {
+    asOf,
     pipelineValue,
     weightedPipeline,
+    nearTermWeighted,
+    coverageHorizonEnd: horizonEnd,
     winRate,
-    /** Closed Deal Win Rate = Closed Won / (Closed Won + Closed Lost) */
     closedDealWinRate: winRate,
     closedWonCount: closedWon.length,
     closedLostCount: closedLost.length,
@@ -122,140 +191,23 @@ export function computeSalesPipeline(data: DataStore) {
     conversionHints,
     stageAging,
     pastDueClose,
+    pastExpectedStart,
+    pastExpectedClose,
     remainingSalesTarget,
     pipelineCoverage,
-    pipelineCoverageNote:
-      'Coverage = Weighted Open Pipeline ÷ synthetic remaining target (35% of recent Closed-Won TCV floor). Not a CRM quota system.',
+    coverageMult,
+    pipelineCoverageNote: `Coverage = Weighted TCV of open opps with expected_close in ${asOf}→${horizonEnd} ÷ Demo near-term bookings target ($${DEMO_NEAR_TERM_BOOKINGS_TARGET_TCV.toLocaleString()}). Independent demo target — not reverse-engineered from open pipeline.`,
+    demoStageProbNote: DEMO_STAGE_PROB_NOTE,
+    demoStageAgeNote: DEMO_STAGE_AGE_NOTE,
     winLossBySegment,
+    segmentCoveragePct,
     segmentRollupNote:
       segmentClosed === closed.length
-        ? 'Segment win rates use the same Closed Won+Lost set as Overall (including Unassigned).'
+        ? `Segment coverage ${segmentCoveragePct == null ? '—' : `${segmentCoveragePct.toFixed(0)}%`} of closed deals (prospect segment on opp).`
         : `Segment table covers ${segmentClosed}/${closed.length} closed deals — investigate mapping gaps.`,
-    note: 'Stage chart shows current stock by stage (independent counts). It is not a cascading conversion funnel — later stages can hold larger deals. Opportunity value ≠ recognized revenue. TCV ≠ period Recognized Revenue.',
+    openGrossFoots: Math.abs(openGrossCheck - pipelineValue) < 0.05,
+    openWeightedFoots: Math.abs(openWeightedCheck - weightedPipeline) < 0.05,
+    note: 'Stage chart shows current stock by stage. Opportunity value = demo TCV ≠ recognized revenue.',
   }
 }
 
-export function computeOperationalPipeline(data: DataStore, filters: GlobalFilters) {
-  // Scope Active contracts to the same customer filter as shipments (apples-to-apples)
-  const contractedIds = new Set(
-    data.contracts
-      .filter((c) => c.status === 'Active')
-      .filter((c) => !filters.customerIds.length || filters.customerIds.includes(c.customer_id))
-      .map((c) => c.customer_id),
-  )
-  const contracted = contractedIds.size
-  const shipments = filterShipments(data, filters)
-  const activeCustomers = new Set(shipments.map((s) => s.customer_id)).size
-  const billable = shipments.filter((s) => s.billable)
-  const lines = filterBillingLines(data, filters)
-  const ratedCharges = sumMoney(
-    lines.map((l) => l.base_charge + l.fuel_surcharge + l.remote_surcharge),
-  )
-  const netBilling = sumMoney(lines.map((l) => l.net_amount))
-  const recognized = computeRecognizedRevenue(data, filters).amount
-
-  const stages = [
-    {
-      key: 'contracted',
-      label: 'Contracted Customers',
-      value: contracted,
-      unit: 'count' as const,
-      dateBasis: 'Contract status = Active (customer-filtered)',
-    },
-    {
-      key: 'active',
-      label: 'Active Customers',
-      value: activeCustomers,
-      unit: 'count' as const,
-      dateBasis: 'Shipments with ship_date in filter',
-    },
-    {
-      key: 'shipments',
-      label: 'Shipment Volume (packages)',
-      value: pkgs(shipments),
-      unit: 'count' as const,
-      dateBasis: 'ship_date',
-    },
-    {
-      key: 'billable',
-      label: 'Billable Packages',
-      value: pkgs(billable),
-      unit: 'count' as const,
-      dateBasis: 'ship_date · billable flag',
-    },
-    {
-      key: 'rated',
-      label: 'Gross Rated Charges',
-      value: ratedCharges,
-      unit: 'money' as const,
-      dateBasis: 'billing_period (line gross before discount)',
-    },
-    {
-      key: 'net',
-      label: 'Net Billing',
-      value: netBilling,
-      unit: 'money' as const,
-      dateBasis: 'billing_period',
-    },
-    {
-      key: 'recognized',
-      label: 'Recognized Revenue',
-      value: recognized,
-      unit: 'money' as const,
-      dateBasis: 'accounting_period (recognition)',
-    },
-  ]
-
-  /** Same-unit ratios only. Money→money rows are yield / timing ratios — NOT conversion rates. */
-  const conversions = [
-    {
-      from: 'Contracted → Active',
-      rate: pct(activeCustomers, contracted),
-      kind: 'count_ratio' as const,
-      leakage: 'Inactive contracted accounts / not yet shipping in window',
-      numerator: activeCustomers,
-      denominator: contracted,
-    },
-    {
-      from: 'Shipments → Billable',
-      rate: pct(pkgs(billable), pkgs(shipments)),
-      kind: 'count_ratio' as const,
-      leakage: 'Failed deliveries under non-billable rules',
-      numerator: pkgs(billable),
-      denominator: pkgs(shipments),
-    },
-    {
-      from: 'Billable packages vs Billed line packages',
-      rate: pct(pkgs(lines), pkgs(billable)),
-      kind: 'count_ratio' as const,
-      leakage:
-        'Cross-period billing / missing billing — ship_date vs billing_period may differ; not a pure funnel conversion',
-      numerator: pkgs(lines),
-      denominator: pkgs(billable),
-    },
-    {
-      from: 'Net Billing ÷ Gross Rated (yield)',
-      rate: pct(netBilling, ratedCharges),
-      kind: 'yield_ratio' as const,
-      leakage: 'Discounts + credits (not a stage conversion)',
-      numerator: netBilling,
-      denominator: ratedCharges,
-    },
-    {
-      from: 'Recognized ÷ Net Billing (timing ratio)',
-      rate: pct(recognized, netBilling),
-      kind: 'timing_ratio' as const,
-      leakage:
-        'Different date bases (billing_period vs accounting_period). Can exceed 100% with accruals / prior-period release — use Lifecycle Bridge, not conversion %.',
-      numerator: recognized,
-      denominator: netBilling,
-    },
-  ]
-
-  return {
-    stages,
-    conversions,
-    dateBasisNote:
-      'Operational: ship_date · Commercial billing: billing_period · Accounting: accounting_period. Do not treat Net Billing → Recognized as a conversion funnel.',
-  }
-}

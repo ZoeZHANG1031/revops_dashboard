@@ -1,7 +1,10 @@
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { Fragment, useDeferredValue, useMemo, useState } from 'react'
 import {
+  Bar,
+  BarChart,
   CartesianGrid,
+  Cell,
   Legend,
   Line,
   LineChart,
@@ -30,6 +33,8 @@ import {
 import { computeSharedMetrics } from '@/calc/metricRegistry'
 import { computeVarianceBridge } from '@/calc/varianceBridge'
 import { FloatingWaterfall } from '@/components/charts/FloatingWaterfall'
+import { BridgeAttribution } from '@/components/charts/BridgeAttribution'
+import { summarizeSteps } from '@/lib/waterfall'
 import { ChartCard } from '@/components/common/ChartCard'
 import { Collapsible } from '@/components/common/Collapsible'
 import { DataTable } from '@/components/common/DataTable'
@@ -103,11 +108,10 @@ export function ExecutiveOverview() {
           : 'Behind'
 
   // Driver attribution quality — separate from forecast accuracy
-  const residual = bridge.items.find((i) => i.key === 'other')?.amount ?? 0
-  const residualShare =
-    bridge.attributionCoverage == null ? null : 100 - bridge.attributionCoverage
-  const attributionQuality = bridge.attributionCoverage
-  const residualPctOfForecast = bridge.forecast === 0 ? null : (residual / Math.abs(bridge.forecast)) * 100
+  // One canonical summary for header, chart footer, tooltip and insight text
+  const bridgeSummary = summarizeSteps(bridge.items, ['forecast', 'actual'])
+  const residual = bridgeSummary.residual
+  const residualShare = bridgeSummary.attributionCoverage == null ? null : 100 - bridgeSummary.attributionCoverage
   const bridgeUi = bridge.items
 
   const sortedGroups = useMemo(() => {
@@ -133,7 +137,7 @@ export function ExecutiveOverview() {
   const topDriver = [...drivers].sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))[0]
   const bridgeInsight =
     comparable && topDriver
-      ? `Largest known driver: ${topDriver.label} (${topDriver.amount >= 0 ? '+' : '−'}${formatCurrency(Math.abs(topDriver.amount), true)}); unexplained residual ${formatCurrency(residual, true)} = ${residualShare == null ? 'N/A' : `${residualShare.toFixed(0)}%`} of driver movement.`
+      ? `Largest known driver: ${topDriver.label} (${topDriver.amount >= 0 ? '+' : '−'}${formatCurrency(Math.abs(topDriver.amount), true)}); unexplained residual ${formatCurrency(residual, true)} = ${residualShare == null ? 'N/A' : `${residualShare.toFixed(1)}%`} of driver movement.`
       : null
   const topGroup = sortedGroups[0]
   const actionInsight = topGroup
@@ -179,7 +183,7 @@ export function ExecutiveOverview() {
   const EXPOSURE_NOTES: Record<string, string> = {
     'Recoverable Billing Exposure': 'Open under-billing that could be re-billed · Exposure ≠ Confirmed Loss',
     'Collections Exposure': 'Overdue invoices — cash timing · Overdue AR ≠ Revenue Leakage',
-    'Customer Revenue Risk': 'Full portfolio Scenario RaR · At Risk ≠ Guaranteed Loss · actions show sample',
+    'Customer Revenue Risk': 'Full portfolio Scenario Revenue Exposure · At Risk ≠ Guaranteed Loss · actions show sample',
     'Billing Correction': 'Duplicate billing — refund risk, not revenue',
     'Margin Pressure': 'Contribution shortfall signal',
     'Compensation Audit': 'Commission calc / pay variance — investigation only',
@@ -203,18 +207,19 @@ export function ExecutiveOverview() {
         }
       />
 
-      <nav className="flex flex-wrap gap-2 text-xs" aria-label="Go to">
-        <span className="self-center font-semibold uppercase tracking-wide text-ink-muted">Go to</span>
+      <nav className="flex flex-wrap gap-2 text-xs" aria-label="Analysis paths">
+        <span className="self-center font-semibold uppercase tracking-wide text-ink-muted">Analyze</span>
         {(
           [
-            ['Revenue Performance', '/lifecycle'],
-            ['Revenue Forecasting', '/forecasting'],
-            ['Customer Portfolio', '/customers'],
+            ['Revenue → Gap → Customers', '/forecasting'],
+            ['Billing Leakage', '/lifecycle'],
+            ['Profitability', '/unit-economics'],
+            ['Sales Pipeline', '/pipeline'],
             ['Action Center', '/actions'],
           ] as const
         ).map(([label, path]) => (
           <button
-            key={path}
+            key={path + label}
             type="button"
             className="rounded-lg border border-[#dce6df] bg-white px-2.5 py-1 font-medium text-brand-700 hover:border-brand-400 hover:bg-brand-50"
             onClick={() => navigateWithContext(path, { sourcePage: '/executive' })}
@@ -260,17 +265,17 @@ export function ExecutiveOverview() {
         />
       </section>
 
-      {/* Secondary summary */}
-      <section className="grid gap-3 text-[13px] sm:grid-cols-3 xl:grid-cols-6">
+      {/* Layer 1b — secondary context (compact) */}
+      <section className="grid gap-2 text-[12px] sm:grid-cols-3 xl:grid-cols-6">
         <SummaryChip
           label="Revenue vs Target"
-          value={hasCompanyTargets ? formatCurrency(m.recognizedRevenue, true) : 'N/A'}
+          value={hasCompanyTargets ? formatCurrency(m.recognizedRevenue, true) : 'No Approved Target'}
           note={
             hasCompanyTargets
               ? `Target ${formatCurrency(companyTargetInWindow, true)} (${formatPercent(revenueVsTargetPct)})`
-              : 'No company targets in window'
+              : 'Existing Forecast ≠ company budget'
           }
-          tip="Recognized revenue vs sum of company revenue targets for periods in scope — not forecast"
+          tip="Company revenue targets in scope only — never treat Existing Customer Forecast as approved budget"
         />
         <SummaryChip
           label="Forecast Variance"
@@ -282,26 +287,205 @@ export function ExecutiveOverview() {
         <SummaryChip
           label="Overdue AR"
           value={formatCurrency(m.overdueAr, true)}
-          note="Collections ≠ revenue loss"
+          note="Cash · ≠ revenue loss"
           tip="Σ net of invoices with status Overdue in scope"
           onClick={() => navigateWithContext('/reconciliation', { exceptionType: 'Overdue AR', exceptionStatus: 'Open', sourcePage: '/executive' })}
         />
         <SummaryChip
           label="Billing Accuracy"
           value={formatPercent(m.billingAccuracy)}
-          note="Billed ÷ billable"
-          tip="Distinct billed shipments ÷ billable shipments"
+          note="Line accuracy"
+          tip="Correctly billed packages ÷ eligible billable packages"
           onClick={() => navigateWithContext('/lifecycle', { sourcePage: '/executive' })}
         />
         <SummaryChip label="Net Billing" value={formatCurrency(m.netBilledRevenue, true)} note="Billing period" tip="Σ billing_line.net_amount (non-duplicate)" />
         <SummaryChip label="Cash Collections" value={formatCurrency(m.cashCollections, true)} note="≠ Recognized" tip="Σ payments by payment_date" />
-        <SummaryChip label="Contribution Profit" value={formatCurrency(m.contributionProfit, true)} note="Before fixed" tip="Net Billing − variable cost" />
       </section>
 
-      {/* Top Business Issues — Critical → Watch → Healthy */}
+      {/* Layer 2 — What changed? */}
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-ink-muted">What changed?</p>
+      <div className="grid gap-4 lg:grid-cols-2">
+        <ChartCard
+          icon="forecast"
+          iconTone="forecast"
+          title="Actual vs Existing Customer Forecast"
+          emphasis
+          insight={trendInsight}
+          subtitle={`${filters.startPeriod} → ${filters.endPeriod} · Existing Forecast ≠ approved budget`}
+          timeBasis={`${filters.startPeriod} → ${filters.endPeriod}`}
+        >
+          {!comparable && (
+            <p className="mb-2 rounded-lg bg-amber-50 px-3 py-1.5 text-[13px] text-amber-900">{m.forecastComparableReason}</p>
+          )}
+          <div className="mb-2 flex flex-wrap gap-2 text-[13px]">
+            <Pill label="Actual" value={formatCurrency(m.recognizedRevenue, true)} />
+            <Pill label="Existing Fcst" value={formatCurrency(m.forecastExisting, true)} />
+            <Pill label="Variance" value={comparable ? `${formatCurrency(m.forecastVarianceExisting, true)} (${formatPercent(varPct)})` : 'N/A'} strong />
+            <Pill
+              label="Accuracy"
+              value={comparable && accuracy.wape != null ? `WAPE ${formatPercent(accuracy.wape)}` : 'N/A'}
+              tip="WAPE = Σ|Actual − Forecast| ÷ Σ|Actual| on months with an Existing forecast"
+            />
+          </div>
+          <div className="h-52">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={series} margin={{ top: 6, right: 12, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={PALETTE.grid} />
+                <XAxis dataKey="label" tick={{ fontSize: 12 }} />
+                <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
+                <Tooltip formatter={(v) => formatCurrencyPrecise(Number(v))} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Line isAnimationActive={false} type="linear" dataKey="recognized" name="Actual Recognized" stroke={PALETTE.brand} strokeWidth={2.5} dot={false} />
+                {comparable && (
+                  <Line isAnimationActive={false} type="linear" dataKey="forecast" name="Existing Forecast" stroke={PALETTE.forecast} strokeWidth={2} strokeDasharray="5 4" dot={false} />
+                )}
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </ChartCard>
+
+        <ChartCard
+          icon="forecast"
+          iconTone="forecast"
+          title="Forecast Variance Bridge"
+          emphasis
+          insight={bridgeInsight}
+          subtitle="Volume · Price · Mix · Credits · Residual → Comparable Actual"
+          action={
+            <select className="filter-input" value={bridgeGroup} onChange={(e) => setBridgeGroup(e.target.value as typeof bridgeGroup)} aria-label="Bridge grouping">
+              <option value="total">Company</option>
+              <option value="customer">By Customer</option>
+              <option value="month">By Month</option>
+            </select>
+          }
+        >
+          {!comparable ? (
+            <p className="rounded-lg border border-dashed border-slate-200 px-3 py-10 text-center text-xs text-ink-muted">
+              {m.forecastComparableReason}
+            </p>
+          ) : (
+            <>
+              <BridgeAttribution summary={bridgeSummary} forecastBase={bridge.forecast} note={bridge.attributionNote} />
+              <FloatingWaterfall
+                steps={bridgeUi.map((i) =>
+                  i.key === 'other'
+                    ? { ...i, label: 'Unexplained Residual', shortLabel: 'Residual' }
+                    : i.key === 'forecast'
+                      ? { ...i, shortLabel: 'Forecast' }
+                      : i.key === 'actual'
+                        ? { ...i, shortLabel: 'Actual' }
+                        : i.key === 'volume'
+                          ? { ...i, shortLabel: 'Volume' }
+                          : i.key === 'price'
+                            ? { ...i, shortLabel: 'Price' }
+                            : i.key === 'mix'
+                              ? { ...i, shortLabel: 'Mix' }
+                              : i.key === 'credits'
+                                ? { ...i, shortLabel: 'Credits' }
+                                : i,
+                )}
+                height={240}
+                totalKeys={['forecast', 'actual']}
+                summaryMode="footing"
+                filterSummary={`Scenario ${scenario} · ${filters.startPeriod}→${filters.endPeriod}`}
+              />
+            </>
+          )}
+        </ChartCard>
+      </div>
+
+      {/* Layer 3 — Why / exposure (classes never summed) */}
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
+        Why it matters · exposure by class{' '}
+        <InfoTip text="Classes have different economics (re-billable, cash timing, forward scenario risk, refund risk). Never add them into one loss number." />
+      </p>
+      <ChartCard
+        title="Financial Exposure by Class"
+        subtitle="Ranked · click a bar to open the matching queue · not additive"
+        insight={
+          classTotals.filter((c) => c.impact > 0).sort((a, b) => b.impact - a.impact)[0]
+            ? `Largest class: ${
+                classTotals.filter((c) => c.impact > 0).sort((a, b) => b.impact - a.impact)[0].category
+              } · ${formatCurrency(
+                classTotals.filter((c) => c.impact > 0).sort((a, b) => b.impact - a.impact)[0].impact,
+                true,
+              )}`
+            : null
+        }
+      >
+        <div className="h-56">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart
+              data={[...classTotals].filter((c) => c.impact > 0).sort((a, b) => a.impact - b.impact)}
+              layout="vertical"
+              margin={{ left: 8, right: 48, top: 4, bottom: 4 }}
+            >
+              <CartesianGrid strokeDasharray="3 3" stroke={PALETTE.grid} horizontal={false} />
+              <XAxis type="number" tick={{ fontSize: 11 }} tickFormatter={(v) => formatCurrency(Number(v), true)} />
+              <YAxis
+                type="category"
+                dataKey="category"
+                width={128}
+                tick={{ fontSize: 10 }}
+                tickFormatter={(v) => String(v).replace(' Exposure', '').replace(' Revenue Risk', ' RaR')}
+              />
+              <Tooltip
+                content={({ active, payload }) => {
+                  if (!active || !payload?.[0]) return null
+                  const r = payload[0].payload as (typeof classTotals)[0]
+                  return (
+                    <div className="max-w-xs rounded border border-[#dce6df] bg-white px-2 py-1.5 text-xs shadow">
+                      <div className="font-semibold">{r.category}</div>
+                      <div>{formatCurrencyPrecise(r.impact)}</div>
+                      <div className="text-ink-muted">{formatNumber(r.count)} items</div>
+                      <div className="mt-1 text-[10px] text-ink-muted">{EXPOSURE_NOTES[r.category]}</div>
+                    </div>
+                  )
+                }}
+              />
+              <Bar
+                dataKey="impact"
+                radius={[0, 4, 4, 0]}
+                cursor="pointer"
+                isAnimationActive={false}
+                onClick={(d) => {
+                  const cat = (d as { category?: string })?.category
+                  if (cat === 'Margin Pressure') navigateWithContext('/unit-economics', { sourcePage: '/executive' })
+                  else if (cat === 'Customer Revenue Risk') navigateWithContext('/customers', { sourcePage: '/executive' })
+                  else if (cat === 'Collections Exposure')
+                    navigateWithContext('/reconciliation', {
+                      exceptionType: 'Overdue AR',
+                      exceptionStatus: 'Open',
+                      sourcePage: '/executive',
+                    })
+                  else navigateWithContext('/reconciliation', { exceptionStatus: 'Open', sourcePage: '/executive' })
+                }}
+              >
+                {[...classTotals]
+                  .filter((c) => c.impact > 0)
+                  .sort((a, b) => a.impact - b.impact)
+                  .map((c) => (
+                    <Cell
+                      key={c.category}
+                      fill={
+                        c.category === 'Recoverable Billing Exposure' || c.category === 'Collections Exposure'
+                          ? '#E58A2B'
+                          : c.category === 'Billing Correction' || c.category === 'Compensation Audit'
+                            ? '#C44536'
+                            : PALETTE.brandMid
+                      }
+                    />
+                  ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </ChartCard>
+
+      {/* Top Business Issues */}
       <section>
         <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-          Top Business Issues · ordered by severity
+          Top business issues · severity order
         </p>
         <div className="grid gap-2 md:grid-cols-3">
           {issues.map((issue) => (
@@ -327,128 +511,63 @@ export function ExecutiveOverview() {
         </div>
       </section>
 
-      <Collapsible
-        title="Deep dive — forecast & variance"
-        subtitle="Actual vs Existing Customer Forecast · Forecast Variance Bridge"
-        defaultOpen={false}
-      >
-      <div className="grid gap-4 lg:grid-cols-2">
-        <ChartCard
-          icon="forecast"
-          iconTone="forecast"
-          title="Actual vs Existing Customer Forecast"
-          emphasis
-          insight={trendInsight}
-          businessQuestion="Are we tracking the Existing-customer plan?"
-          formula="Recognized (recognition period) vs Existing forecast_recognized"
-          source="fact_revenue_recognition, fact_forecast (Existing)"
-          timeBasis={`${filters.startPeriod} → ${filters.endPeriod}`}
-        >
-          {!comparable && (
-            <p className="mb-2 rounded-lg bg-amber-50 px-3 py-1.5 text-[13px] text-amber-900">{m.forecastComparableReason}</p>
-          )}
-          <div className="mb-2 flex flex-wrap gap-2 text-[13px]">
-            <Pill label="Actual" value={formatCurrency(m.recognizedRevenue, true)} />
-            <Pill label="Existing Fcst" value={formatCurrency(m.forecastExisting, true)} />
-            <Pill label="Variance" value={comparable ? `${formatCurrency(m.forecastVarianceExisting, true)} (${formatPercent(varPct)})` : 'N/A'} strong />
-            <Pill
-              label="Accuracy"
-              value={comparable && accuracy.wape != null ? `WAPE ${formatPercent(accuracy.wape)}` : 'N/A'}
-              tip="WAPE = Σ|Actual − Forecast| ÷ Σ|Actual| on months with an Existing forecast"
-            />
-          </div>
-          <div className="h-56">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={series} margin={{ top: 6, right: 12, left: 0, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={PALETTE.grid} />
-                <XAxis dataKey="label" tick={{ fontSize: 12 }} />
-                <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
-                <Tooltip formatter={(v) => formatCurrencyPrecise(Number(v))} />
-                <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Line isAnimationActive={false} type="monotone" dataKey="recognized" name="Actual Recognized" stroke={PALETTE.brand} strokeWidth={2.5} dot={false} />
-                {comparable && (
-                  <Line isAnimationActive={false} type="monotone" dataKey="forecast" name="Existing Forecast" stroke={PALETTE.forecast} strokeWidth={2} strokeDasharray="5 4" dot={false} />
-                )}
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-          <p className="mt-1 text-xs text-ink-muted">
-            Pipeline {formatCurrency(m.forecastPipeline, true)} · Total Business {formatCurrency(m.forecastTotal, true)} — not in this
-            variance (no comparable actual).
-          </p>
-        </ChartCard>
-
-        <ChartCard
-          icon="forecast"
-          iconTone="forecast"
-          title="Forecast Variance Bridge"
-          emphasis
-          insight={bridgeInsight}
-          businessQuestion="Which known drivers explain the gap — and how much is unexplained?"
-          formula="Forecast + Volume + Price + Mix + Credits + Residual = Comparable Actual"
-          source="computeVarianceBridge"
-          action={
-            <select className="filter-input" value={bridgeGroup} onChange={(e) => setBridgeGroup(e.target.value as typeof bridgeGroup)} aria-label="Bridge grouping">
-              <option value="total">Company</option>
-              <option value="customer">By Customer</option>
-              <option value="month">By Month</option>
-            </select>
-          }
-        >
-          {!comparable ? (
-            <p className="rounded-lg border border-dashed border-slate-200 px-3 py-10 text-center text-xs text-ink-muted">
-              {m.forecastComparableReason}
-            </p>
-          ) : (
-            <>
-              <div className="mb-2 flex flex-wrap gap-2 text-[13px]">
-                <Pill label="Residual" value={`${formatCurrency(residual, true)} (${formatPercent(residualPctOfForecast)} of fcst)`} />
-                <Pill
-                  label="Attribution quality"
-                  value={attributionQuality == null ? 'N/A' : formatPercent(attributionQuality)}
-                  tip="100 − |Residual| ÷ Σ|bridge components|. Separate from forecast accuracy."
-                  strong
+      {/* Layer 4 — What should we do? Top 3 then full table */}
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-ink-muted">What should we do?</p>
+      <section className="space-y-3">
+        <div className="grid gap-3 lg:grid-cols-3">
+          {sortedGroups.slice(0, 3).map((g, idx) => (
+            <div
+              key={g.key}
+              className="rounded-xl border border-[#dce6df] bg-white p-3 shadow-sm"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <span className="rounded bg-[#123C35] px-1.5 py-0.5 text-[10px] font-bold text-white">
+                  #{idx + 1}
+                </span>
+                <StatusIndicator
+                  tone={g.urgency === 3 ? 'critical' : g.urgency === 2 ? 'watch' : 'neutral'}
+                  label={g.urgency === 3 ? 'High' : g.urgency === 2 ? 'Medium' : 'Low'}
                 />
               </div>
-              {(bridge.attributionQualityWarning || (residualShare != null && residualShare > 30)) && (
-                <p className="mb-2 rounded-lg bg-amber-50 px-3 py-1.5 text-[13px] text-amber-900">
-                  Attribution Quality Warning — {bridge.attributionNote} Coverage{' '}
-                  {attributionQuality == null ? 'N/A' : formatPercent(attributionQuality)}.
-                </p>
-              )}
-              <FloatingWaterfall steps={bridgeUi} height={250} />
-            </>
-          )}
-        </ChartCard>
-      </div>
-      </Collapsible>
-
-      {/* Exposure classes — never added together */}
-      <section>
-        <div className="mb-1.5 flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-          Exposure by class <InfoTip text="Each class has a different meaning (re-billable revenue, cash timing, forward risk, refund risk). They are shown side by side and never summed into one revenue-loss number." />
-        </div>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-          {classTotals.map((c) => (
-            <div key={c.category} className="rounded-lg border border-[#dce6df] bg-white px-3 py-2">
-              <p className="text-xs font-semibold uppercase text-ink-muted">{c.category}</p>
-              <p className="font-mono text-sm font-semibold text-ink">{formatCurrency(c.impact, true)}</p>
-              <p className="text-xs text-ink-muted">
-                {formatNumber(c.count)} items · {EXPOSURE_NOTES[c.category]}
+              <p className="mt-2 text-sm font-semibold text-ink">{g.rootCause}</p>
+              <p className="text-[11px] text-ink-muted">{g.category}</p>
+              <p className="mt-2 font-mono text-lg font-semibold text-ink" title={formatCurrencyPrecise(g.impact)}>
+                {formatCurrency(g.impact, true)}
               </p>
+              <p className="text-[10px] text-ink-muted">
+                Exposure · {formatNumber(g.cases)} cases · Confidence {g.confidence}
+                {g.confidence !== 'High' ? ' · Pending Validation' : ''}
+              </p>
+              <p className="mt-2 text-[12px] text-ink">
+                <span className="text-ink-muted">Owner · </span>
+                {g.owner}
+              </p>
+              <p className="mt-1 text-[12px] leading-snug text-ink">{g.recommendedAction}</p>
+              <button
+                type="button"
+                className="mt-3 text-[12px] font-medium text-forest underline"
+                onClick={() => drillGroup(g)}
+              >
+                Open detail
+              </button>
             </div>
           ))}
+          {sortedGroups.length === 0 && (
+            <p className="col-span-full rounded-lg border border-dashed border-slate-200 px-3 py-6 text-center text-xs text-ink-muted">
+              No actionable exceptions under current filters.
+            </p>
+          )}
         </div>
       </section>
 
-      {/* Action Priority — aggregated by root cause */}
+      {/* Full Action Priority table */}
       <ChartCard
         icon="actions"
         title="Action Priority"
         emphasis
         insight={actionInsight}
         formula={ACTION_PRIORITY_RULE}
-        subtitle="Grouped by root cause · owners are suggested, not assigned · click a row to expand its records"
+        subtitle="Full queue · priority score = impact + urgency + confidence + actionability · owners suggested"
         businessQuestion="What should Billing / Finance / Sales do this week?"
         action={
           <label className="flex items-center gap-1 text-[13px] text-ink-muted">

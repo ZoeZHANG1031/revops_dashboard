@@ -34,8 +34,8 @@ interface InteractiveBusinessFlowProps {
   /** gaps[i] sits between stages[i] and stages[i+1] */
   gaps?: (FlowGap | null)[]
   selectedId?: string | null
-  /** compact = overview strip; large = primary lifecycle flow */
-  size?: 'compact' | 'large'
+  /** compact = overview strip; large = primary lifecycle flow; dense = name+value+badge only */
+  size?: 'compact' | 'large' | 'dense'
 }
 
 const TONE_BORDER: Record<FlowTone, string> = {
@@ -59,7 +59,8 @@ export function InteractiveBusinessFlow({
   selectedId,
   size = 'compact',
 }: InteractiveBusinessFlowProps) {
-  const lg = size === 'large'
+  const dense = size === 'dense'
+  const lg = size === 'large' || dense
   return (
     <div>
       {(title || subtitle) && (
@@ -70,12 +71,15 @@ export function InteractiveBusinessFlow({
           {subtitle && <p className="text-[13px] text-ink-muted">{subtitle}</p>}
         </div>
       )}
-      {/* >=1280px: one row (stage columns share width, gap columns fixed); narrower: wrap */}
       <ol
         className="flex flex-wrap items-stretch gap-1.5 [overflow-wrap:normal] [word-break:normal] xl:grid xl:gap-1.5"
         style={{
           gridTemplateColumns: stages
-            .map((_, i) => (i < stages.length - 1 ? `minmax(0,1fr) ${gaps ? (lg ? '76px' : '68px') : '14px'}` : 'minmax(0,1fr)'))
+            .map((_, i) =>
+              i < stages.length - 1
+                ? `minmax(0,1fr) ${gaps ? (lg ? '64px' : '68px') : '14px'}`
+                : 'minmax(0,1fr)',
+            )
             .join(' '),
         }}
       >
@@ -83,6 +87,8 @@ export function InteractiveBusinessFlow({
           const gap = gaps?.[i] ?? null
           const selected = selectedId === s.id
           const tone = s.status ?? 'neutral'
+          const showStatus = !dense && s.statusLabel
+          const showStatusWatch = dense && s.statusLabel && tone !== 'ok' && tone !== 'neutral'
           return (
             <li key={s.id} className="flex flex-1 items-stretch gap-1.5 xl:contents">
               <button
@@ -90,8 +96,14 @@ export function InteractiveBusinessFlow({
                 disabled={!s.onClick}
                 onClick={s.onClick}
                 aria-pressed={selected}
-                className={`w-full rounded-lg border border-t-4 text-left transition-all ${lg ? 'min-w-[118px] px-3 py-3 xl:min-w-0' : 'min-w-[112px] px-3 py-2 xl:min-w-0'} ${
-                  s.status ? TONE_BORDER[tone] : ''
+                className={`w-full rounded-lg border border-t-4 text-left transition-all ${
+                  dense
+                    ? 'min-w-[100px] px-2.5 py-2 xl:min-w-0'
+                    : lg
+                      ? 'min-w-[118px] px-3 py-3 xl:min-w-0'
+                      : 'min-w-[112px] px-3 py-2 xl:min-w-0'
+                } ${
+                  s.status && (tone === 'watch' || tone === 'alert') ? TONE_BORDER[tone] : 'border-t-[#c5d5cb]'
                 } ${
                   selected
                     ? 'border-forest bg-brand-50 shadow-md ring-2 ring-forest/30'
@@ -101,32 +113,40 @@ export function InteractiveBusinessFlow({
                         ? 'cursor-default border-[#dce6df] bg-white'
                         : 'border-dashed border-[#c5d5cb] bg-[#f5f8f5] opacity-80'
                 }`}
-                title={s.available ? s.activity : 'Data unavailable for this stage'}
+                title={s.available ? `${s.activity}${s.metricLabel ? ` · ${s.metricLabel}` : ''}` : 'Data unavailable for this stage'}
               >
                 <div className="flex flex-wrap items-start justify-between gap-1">
-                  <p className="text-xs font-semibold uppercase text-brand-600">
-                    {i + 1}. {s.label}
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
+                    {s.label}
                   </p>
                   {s.exceptionCount != null && s.exceptionCount > 0 && (
                     <span
-                      className="inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap rounded bg-red-50 px-1 text-xs font-semibold text-danger"
+                      className={`inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap rounded px-1 text-[10px] font-semibold ${
+                        tone === 'alert' ? 'bg-red-50 text-danger' : 'bg-amber-50 text-warning'
+                      }`}
                       title={`${s.exceptionCount} open / investigating exceptions`}
                     >
-                      <AlertTriangle size={11} />
+                      <AlertTriangle size={10} />
                       {s.exceptionCount}
                     </span>
                   )}
                 </div>
-                <p className="mt-0.5 line-clamp-1 text-xs text-ink-muted">{s.activity}</p>
-                <p className={`mt-1 font-mono text-ink ${lg ? 'text-xl font-bold' : 'text-[15px] font-semibold'}`}>
+                {!dense && <p className="mt-0.5 line-clamp-1 text-xs text-ink-muted">{s.activity}</p>}
+                <p
+                  className={`mt-1 font-mono tabular-nums text-ink ${
+                    dense ? 'text-lg font-semibold' : lg ? 'text-xl font-bold' : 'text-[15px] font-semibold'
+                  }`}
+                >
                   {s.available ? s.metricValue : 'Data unavailable'}
                 </p>
-                <p className="text-xs text-ink-muted">{s.metricLabel}</p>
-                {s.statusLabel && (
-                  <span className={`mt-1 inline-block rounded px-1 text-xs font-semibold ${TONE_BADGE[tone]}`}>
+                <p className={`text-ink-muted ${dense ? 'text-[10px] leading-tight' : 'text-xs'}`}>
+                  {s.metricLabel}
+                </p>
+                {(showStatus || showStatusWatch) && s.statusLabel ? (
+                  <span className={`mt-1 inline-block rounded px-1 text-[10px] font-semibold ${TONE_BADGE[tone]}`}>
                     {s.statusLabel}
                   </span>
-                )}
+                ) : null}
               </button>
               {i < stages.length - 1 &&
                 (gap ? (
@@ -136,15 +156,21 @@ export function InteractiveBusinessFlow({
                     disabled={!gap.onClick}
                     aria-pressed={selectedId === gap.id}
                     title={gap.title ?? gap.label}
-                    className={`flex shrink-0 flex-col items-center justify-center rounded-md border px-1 py-1 text-center leading-tight transition-colors ${lg ? 'w-[80px] text-[13px] xl:w-auto' : 'w-[76px] text-xs xl:w-auto'} ${
+                    className={`flex shrink-0 flex-col items-center justify-center rounded-md border px-1 py-1 text-center leading-tight transition-colors ${
+                      dense ? 'w-[60px] text-[10px] xl:w-auto' : lg ? 'w-[80px] text-[13px] xl:w-auto' : 'w-[76px] text-xs xl:w-auto'
+                    } ${
                       selectedId === gap.id
                         ? 'border-forest bg-brand-50 ring-2 ring-forest/30'
                         : 'border-transparent hover:border-[#dce6df] hover:bg-white'
                     }`}
                   >
-                    <ChevronRight size={lg ? 18 : 14} className="text-ink-muted" />
-                    <span className={`whitespace-nowrap rounded px-1.5 py-0.5 font-semibold ${lg ? 'text-sm' : ''} ${TONE_BADGE[gap.tone]}`}>{gap.value}</span>
-                    <span className="mt-0.5 text-ink-muted">{gap.label}</span>
+                    <ChevronRight size={dense ? 14 : lg ? 18 : 14} className="text-ink-muted" />
+                    <span className={`whitespace-nowrap rounded px-1 py-0.5 font-semibold ${TONE_BADGE[gap.tone]}`}>
+                      {gap.value}
+                    </span>
+                    <span className={`mt-0.5 text-ink-muted ${dense ? 'line-clamp-2 text-[9px] leading-tight' : ''}`}>
+                      {gap.label}
+                    </span>
                   </button>
                 ) : (
                   <span className="hidden self-center text-ink-muted sm:inline" aria-hidden>

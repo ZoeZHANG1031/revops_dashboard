@@ -1,9 +1,11 @@
 /**
- * AR snapshot helpers — Outstanding / Overdue / Aging share one invoice population.
- * Balance = invoice.net_amount − payments allocated (never negative).
- * Date basis: as-of for overdue & aging days; invoice set from filterInvoices (accounting_period).
+ * AR snapshot — Outstanding / Overdue / Aging share one invoice population.
+ * Balance = invoice.net_amount − payments with payment_date ≤ asOf (never negative).
+ * Population: every invoice dated <= asOf (customer filter only). AR is a point-in-time balance, so the
+ * activity period does NOT scope it - an old unpaid invoice is still owed (and is the most overdue).
  */
-import { filterInvoices } from '@/lib/filters'
+import { resolveAsOf, type ArBalanceMode } from '@/lib/asOf'
+import { matchesCustomer } from '@/lib/filters'
 import { money, sumMoney } from '@/lib/money'
 import type { DataStore, FactInvoice, GlobalFilters } from '@/types'
 
@@ -17,17 +19,30 @@ export interface ArAgingBucket {
 
 export interface ArSnapshot {
   asOf: string
+  snapshotAsOf: string
+  mode: ArBalanceMode
+  balanceLabel: string
+  note: string
   outstandingAr: number
   overdueAr: number
   aging: ArAgingBucket[]
   openInvoices: FactInvoice[]
-  /** Aging sum must equal outstanding within tolerance */
   agingFoots: boolean
-  /** Overdue buckets sum vs overdueAr */
   overdueFoots: boolean
 }
 
-function paidByInvoice(data: DataStore): Map<string, number> {
+/** Payments applied on or before asOf (inclusive). */
+export function paidByInvoiceAsOf(data: DataStore, asOf: string): Map<string, number> {
+  const m = new Map<string, number>()
+  for (const p of data.payments) {
+    if (p.payment_date.slice(0, 10) > asOf) continue
+    m.set(p.invoice_id, money((m.get(p.invoice_id) ?? 0) + p.amount))
+  }
+  return m
+}
+
+/** @deprecated Prefer paidByInvoiceAsOf — unscoped sum uses all payments (current ledger). */
+export function paidByInvoice(data: DataStore): Map<string, number> {
   const m = new Map<string, number>()
   for (const p of data.payments) {
     m.set(p.invoice_id, money((m.get(p.invoice_id) ?? 0) + p.amount))
@@ -47,24 +62,36 @@ export function daysPastDue(dueDate: string, asOf: string): number {
   return Math.floor((Date.parse(asOf) - Date.parse(dueDate)) / 86400000)
 }
 
+/**
+ * Overdue = remaining balance and due_date < asOf.
+ * Does not trust current invoice.status for historical as-of (status is snapshot-time).
+ */
 export function isOverdueInvoice(inv: FactInvoice, asOf: string, outstanding: number): boolean {
   if (outstanding <= 0.005) return false
-  if (inv.status === 'Overdue') return true
   return daysPastDue(inv.due_date, asOf) > 0
 }
 
 /**
- * Open invoices in the shared filter window (accounting_period) with remaining balance.
- * Aligns Collections aging with SharedMetrics accountsReceivable / overdueAr.
+ * Open invoices (any issue period) with remaining balance as of `asOf`.
+ * Aligns Collections aging with SharedMetrics accountsReceivable / overdueAr when same asOf is passed.
  */
-export function computeArSnapshot(data: DataStore, filters: GlobalFilters): ArSnapshot {
-  const asOf = data.meta.as_of_date
-  const paidMap = paidByInvoice(data)
-  const invoices = filterInvoices(data, filters)
-  const openInvoices = invoices.filter((inv) => {
-    if (inv.status === 'Paid') return false
-    return invoiceOutstanding(inv, paidMap) > 0.005
-  })
+export function computeArSnapshot(
+  data: DataStore,
+  filters: GlobalFilters,
+  asOfInput?: string | null,
+): ArSnapshot {
+  const resolved = resolveAsOf(data, asOfInput)
+  const { asOf, snapshotAsOf, mode, balanceLabel, note } = resolved
+  const paidMap = paidByInvoiceAsOf(data, asOf)
+
+  const invoices = data.invoices.filter(
+    (inv) =>
+      inv.invoice_date.slice(0, 10) <= asOf &&
+      inv.status !== 'Draft' &&
+      (filters.customerIds.length === 0 || matchesCustomer(inv.customer_id, filters)),
+  )
+
+  const openInvoices = invoices.filter((inv) => invoiceOutstanding(inv, paidMap) > 0.005)
 
   const outstandingAr = sumMoney(openInvoices.map((inv) => invoiceOutstanding(inv, paidMap)))
   const overdueInvoices = openInvoices.filter((inv) =>
@@ -99,6 +126,10 @@ export function computeArSnapshot(data: DataStore, filters: GlobalFilters): ArSn
 
   return {
     asOf,
+    snapshotAsOf,
+    mode,
+    balanceLabel,
+    note,
     outstandingAr,
     overdueAr,
     aging,

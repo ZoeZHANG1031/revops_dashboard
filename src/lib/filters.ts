@@ -213,13 +213,22 @@ export function filterCosts(data: DataStore, filters: GlobalFilters): FactCost[]
   })
 }
 
+const OPEN_AR_STATUSES = new Set(['Open', 'Investigating', 'Pending Approval'])
+
 export function filterExceptions(data: DataStore, filters: GlobalFilters): FactException[] {
-  const scoped = rowsInPeriodRange(
+  const inPeriod = rowsInPeriodRange(
     data.exceptions,
     filters.startPeriod,
     filters.endPeriod,
     (e) => e.detected_date.slice(0, 7),
   )
+  // Open Overdue AR cases describe a point-in-time balance (same population as the AR snapshot):
+  // they stay in scope until collected, whatever month they were first detected.
+  const seen = new Set(inPeriod)
+  const carried = data.exceptions.filter(
+    (e) => e.exception_type === 'Overdue AR' && OPEN_AR_STATUSES.has(e.status) && !seen.has(e),
+  )
+  const scoped = carried.length ? [...inPeriod, ...carried] : inPeriod
   const dimensional =
     filters.regions.length > 0 || filters.serviceTypes.length > 0 || (filters.metros?.length ?? 0) > 0
   if (filters.customerIds.length === 0 && !dimensional) return scoped

@@ -127,7 +127,7 @@ export function buildActionCenter(data: DataStore, filters: GlobalFilters): Acti
   // Health-driven RaR not already covered
   const health = computeCustomerHealth(data, filters)
   health
-    .filter((h) => h.healthScore < 45)
+    .filter((h) => h.healthBand === 'Critical') // same < 50 cut as the Health band
     .slice(0, 5)
     .forEach((h) => {
       if (items.some((i) => i.customerId === h.customerId && i.category === 'Customer Revenue Risk')) return
@@ -137,10 +137,10 @@ export function buildActionCenter(data: DataStore, filters: GlobalFilters): Acti
         title: `${h.customerName} health ${h.healthScore}`,
         financialImpact: h.revenueAtRisk,
         isBookedLoss: false,
-        severity: h.healthScore < 40 ? 'Critical' : 'High',
+        severity: h.healthScore < 35 ? 'Critical' : 'High',
         owner: 'Sales',
         status: 'Open',
-        rootCause: `Assumed loss ${Math.round(h.assumedLossProbability * 100)}% × expected future revenue (scenario — not churn model). Drivers: ${h.drivers.join(', ') || 'composite'}`,
+        rootCause: `Stress factor ${Math.round(h.assumedLossProbability * 100)}% × expected future revenue (scenario — not churn model). Drivers: ${h.drivers.join(', ') || 'composite'}`,
         recommendedAction: h.recommendedActions[0] ?? 'Retention outreach',
         customerId: h.customerId,
         actionability: 2,
@@ -252,7 +252,7 @@ export function actionCategoryTotals(
   return cats.map((category) => {
     const subset = items.filter((i) => i.category === category)
     const actionImpact = sumMoney(subset.map((i) => i.financialImpact))
-    // Customer Revenue Risk on Executive uses portfolio Scenario RaR when provided —
+    // Customer Revenue Risk on Executive uses portfolio Scenario Revenue Exposure when provided —
     // action rows remain a prioritized sample (top low-health), not the full exposure.
     const impact =
       category === 'Customer Revenue Risk' &&
@@ -266,7 +266,7 @@ export function actionCategoryTotals(
       actionSampleImpact: actionImpact,
       note:
         category === 'Customer Revenue Risk' && opts?.fullScenarioRevenueAtRisk != null
-          ? 'Full portfolio Scenario RaR · action list shows prioritized sample only'
+          ? 'Full portfolio Scenario Revenue Exposure · action list shows prioritized sample only'
           : undefined,
     }
   })

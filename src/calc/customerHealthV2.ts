@@ -61,14 +61,14 @@ function contractRenewalComponent(daysUntil: number | null): number | null {
 
 export function componentsFromHealthRow(
   row: CustomerHealthRow,
-  extras?: { engagementScore?: number | null; daysUntilRenewal?: number | null },
+  extras?: { engagementScore?: number | null; daysUntilRenewal?: number | null; asOfDate?: string },
 ): HealthV2Components {
   const days =
     extras?.daysUntilRenewal ??
     (row.contractRenewalDate
       ? Math.round(
           (Date.parse(row.contractRenewalDate) -
-            Date.parse(new Date().toISOString().slice(0, 10))) /
+            Date.parse(extras?.asOfDate ?? '2026-11-05')) /
             86400000,
         )
       : null)
@@ -147,6 +147,7 @@ export function computeHealthV2ForCustomer(
   const components = componentsFromHealthRow(row, {
     engagementScore: engagement,
     daysUntilRenewal,
+    asOfDate,
   })
   return computeHealthV2(components)
 }

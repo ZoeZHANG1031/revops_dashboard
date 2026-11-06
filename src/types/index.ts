@@ -163,15 +163,26 @@ export interface FactOpportunity {
   opportunity_id: string
   customer_id: string | null
   prospect_name: string
+  /** Prospect / account segment — set at opp creation for Won and Lost (not only after customer conversion) */
+  segment: 'Enterprise' | 'Mid-Market' | 'SMB'
   stage: OpportunityStage
   opportunity_value: number
   win_probability: number
+  /** Expected contract / close date (sales action) */
+  expected_close_date: string
+  /** Expected service start — usually on or after expected_close_date */
   expected_start_date: string
   expected_monthly_volume: number
   expected_monthly_revenue: number
   created_date: string
   closed_date: string | null
   sales_cycle_days: number | null
+  /** Demo sales-owner label (synthetic) */
+  owner_name: string
+  /** Demo next action text (synthetic) */
+  next_step: string
+  /** Demo follow-up date (synthetic) */
+  next_follow_up_date: string
   synthetic: true
 }
 

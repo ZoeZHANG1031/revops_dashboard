@@ -38,6 +38,7 @@ import {
   type TransactionAuditStatus,
 } from '@/calc/salesCompensation'
 import { computeUnitEconomics } from '@/calc/unitEconomics'
+import { FloatingWaterfall } from '@/components/charts/FloatingWaterfall'
 import { ChartCard } from '@/components/common/ChartCard'
 import { Collapsible } from '@/components/common/Collapsible'
 import { DataTable } from '@/components/common/DataTable'
@@ -1375,35 +1376,24 @@ export function SalesCompensation({
               title="Commission Impact Waterfall"
               subtitle="Fixed-order attribution · Interaction/Residual closes ledger↔eligibility gaps"
             >
-              <div className="h-64">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart
-                    data={simResult.waterfall.map((w) => ({
-                      ...w,
-                      display: w.key === 'current' || w.key === 'proposed' ? w.amount : w.amount,
-                    }))}
-                  >
-                    <CartesianGrid stroke={PALETTE.grid} strokeDasharray="3 3" />
-                    <XAxis dataKey="label" tick={{ fontSize: 9 }} interval={0} angle={-25} textAnchor="end" height={70} />
-                    <YAxis tickFormatter={(v) => formatCurrency(v, true)} tick={{ fontSize: 11 }} />
-                    <Tooltip formatter={(v) => formatCurrencyPrecise(Number(v))} />
-                    <Bar dataKey="amount" name="Amount / Δ">
-                      {simResult.waterfall.map((w) => (
-                        <Cell
-                          key={w.key}
-                          fill={
-                            w.key === 'current' || w.key === 'proposed'
-                              ? PALETTE.brand
-                              : w.amount >= 0
-                                ? PALETTE.watch
-                                : PALETTE.positive
-                          }
-                        />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
+              <FloatingWaterfall
+                steps={simResult.waterfall.map((w) => ({
+                  key: w.key,
+                  label: w.label,
+                  amount: w.amount,
+                  shortLabel:
+                    w.key === 'current'
+                      ? 'Current'
+                      : w.key === 'proposed'
+                        ? 'Proposed'
+                        : w.key === 'residual'
+                          ? 'Residual'
+                          : w.label.split(' ').slice(0, 2).join(' '),
+                }))}
+                height={260}
+                totalKeys={['current', 'proposed']}
+                footingNote="Current + signed plan impacts (+ residual if any) = Proposed."
+              />
             </ChartCard>
 
             <ChartCard

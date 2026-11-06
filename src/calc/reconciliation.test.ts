@@ -22,7 +22,7 @@ describe('synthetic data integrity', () => {
     expect(data.customers.every((c) => c.synthetic)).toBe(true)
     expect(data.shipments.length).toBeGreaterThan(1000)
     expect(data.customers.length).toBeGreaterThanOrEqual(15)
-    expect(data.customers.length).toBeLessThanOrEqual(30)
+    expect(data.customers.length).toBeLessThanOrEqual(100) // data-v3: 60–100 accounts
   })
 
   it('billing line totals reconcile to invoice net after credit memos', () => {
@@ -109,7 +109,7 @@ describe('synthetic data integrity', () => {
     )
     const total = sumMoney(fixed.map((c) => c.amount))
     // Rounding to cents across customers can leave a small residual
-    expect(Math.abs(total - 9_000)).toBeLessThan(1)
+    expect(Math.abs(total - data.meta.fixed_opex_pool_monthly_base)).toBeLessThan(1)
   })
 
   it('shipments carry metro and operational status for last-mile analytics', () => {

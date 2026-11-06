@@ -79,11 +79,11 @@ export const KPI_DEFINITIONS: Record<string, KpiDefinition> = {
     id: 'revenue_at_risk',
     name: 'Revenue at Risk',
     businessDefinition:
-      'Scenario estimate: expected near-term revenue × assumed loss probability from health bands. Not empirically calibrated churn probability.',
+      'Scenario estimate: expected near-term revenue × band stress factor (demo assumption). Not empirically calibrated churn probability.',
     formula: 'SUM(Expected Future Revenue_c × Assumed Loss Probability_c)',
     sourceTables: ['fact_forecast', 'dim_customer', 'derived health score'],
     sourceColumns: ['forecast_recognized', 'health_score'],
-    calculationExample: 'At-risk customer $400K × 40% assumed loss = $160K RaR',
+    calculationExample: 'At-risk customer $400K × 40% stress factor = $160K RaR',
     interpretation: 'Prioritization signal for retention; assumptions are labeled scenarios.',
     commonCauses: ['Volume decline', 'Payment delinquency', 'Service failures', 'Margin complaints'],
   },

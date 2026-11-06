@@ -1,3 +1,5 @@
+import { Menu } from 'lucide-react'
+import { useState } from 'react'
 import { Outlet } from 'react-router-dom'
 import { DetailDrawer } from '@/components/common/DetailDrawer'
 import { InvestigationBreadcrumb } from '@/components/common/InvestigationBreadcrumb'
@@ -18,17 +20,26 @@ export function AppShell() {
     clearLocalFilters,
     localFilters,
   } = useApp()
+  const [navOpen, setNavOpen] = useState(false)
   const hasLocal = Boolean(
     localFilters.exceptionType || localFilters.exceptionStatus || localFilters.pipelineStage || localFilters.costType,
   )
 
   return (
     <div className="flex min-h-screen">
-      <Sidebar />
+      <Sidebar mobileOpen={navOpen} onClose={() => setNavOpen(false)} />
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="border-b border-[#e1e9e4] bg-white/90 px-6 py-3 backdrop-blur">
+        <header className="border-b border-[#e1e9e4] bg-white/90 px-4 py-3 backdrop-blur md:px-6">
           <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
             <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
+              <button
+                type="button"
+                className="self-center rounded-md border border-[#dce6df] p-1.5 text-ink md:hidden"
+                onClick={() => setNavOpen(true)}
+                aria-label="Open navigation menu"
+              >
+                <Menu size={18} />
+              </button>
               <h1 className="t-app-title text-ink">Last-Mile RevOps Intelligence</h1>
               <span
                 className="rounded-full bg-[#f1f5f2] px-2.5 py-0.5 text-xs text-ink-muted"
@@ -120,7 +131,7 @@ export function AppShell() {
         </header>
         <GlobalFiltersBar />
         <InvestigationBreadcrumb />
-        <main className="flex-1 overflow-auto px-6 py-5">
+        <main className="min-w-0 flex-1 overflow-auto px-4 py-5 md:px-6">
           <Outlet />
         </main>
       </div>

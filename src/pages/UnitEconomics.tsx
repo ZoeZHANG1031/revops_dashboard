@@ -354,7 +354,7 @@ export function UnitEconomics({
                   fixedScenario === s ? 'bg-forest text-white' : 'border border-[#dce6df] bg-white text-ink'
                 }`}
               >
-                {s} ${s === 'Base' ? data.meta.fixed_opex_pool_monthly_base : data.meta.fixed_opex_pool_monthly_downside}/mo
+                {s} {formatCurrency(s === 'Base' ? data.meta.fixed_opex_pool_monthly_base : data.meta.fixed_opex_pool_monthly_downside, true)}/mo
               </button>
             ))}
           </div>

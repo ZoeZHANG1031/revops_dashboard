@@ -120,9 +120,11 @@ describe('financial identities & consistency', { timeout: 60000 }, () => {
   })
 
   it('A window starting before forecasts exist compares only forecast months', () => {
-    const early = { ...base, startPeriod: hist[0] }
+    const firstFc = data.forecasts.map((f) => f.accounting_period).sort()[0]
+    expect(firstFc > hist[0]).toBe(true) // history starts before the first forecast month
+    const early = { ...base, startPeriod: hist[0], endPeriod: hist[hist.length - 1] }
     const m = computeSharedMetrics(data, early)
-    const exact = computeSharedMetrics(data, base)
+    const exact = computeSharedMetrics(data, { ...early, startPeriod: firstFc })
     expect(m.forecastComparable).toBe(true)
     close(m.comparableActual, exact.comparableActual, 0.5)
     close(m.forecastVarianceExisting, exact.forecastVarianceExisting, 0.5)

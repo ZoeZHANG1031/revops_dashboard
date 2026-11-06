@@ -57,7 +57,7 @@ export function listCustomerEngagementEvents(
 
   for (let i = 0; i < count; i++) {
     const type = pick(EVENT_TYPES, seed, i)
-    const daysBack = 15 + ((seed >> (i * 3)) % 320)
+    const daysBack = 15 + ((seed >>> (i * 3)) % 320) // unsigned shift: always in the past
     const neg = type === 'Competitor Mention' || type === 'Support Escalation'
     const sentiment: CustomerEngagementEvent['sentiment'] = neg
       ? pick(['Negative', 'Neutral'], seed, i + 7)
@@ -77,12 +77,29 @@ export function listCustomerEngagementEvents(
     })
   }
 
-  return events.sort((a, b) => b.eventDate.localeCompare(a.eventDate))
+  // Occurred events only: anything dated after the As-of Date is not evidence
+  return events.filter((e) => e.eventDate <= asOfDate).sort((a, b) => b.eventDate.localeCompare(a.eventDate))
+}
+
+export interface PlannedActivity {
+  date: string
+  label: string
+  source: string
+}
+
+/** Scheduled items after the As-of Date — shown as plans, never used for scoring */
+export function listPlannedActivities(
+  contracts: { contract_id: string; end_date: string; status: string }[],
+  asOfDate: string,
+): PlannedActivity[] {
+  return contracts
+    .filter((c) => c.status === 'Active' && c.end_date > asOfDate)
+    .map((c) => ({ date: c.end_date, label: 'Contract renewal date', source: c.contract_id }))
 }
 
 /** 0–100 engagement health from synthetic events (lower if recent negatives). */
 export function engagementRiskSignal(customerId: string, asOfDate: string): number {
-  const events = listCustomerEngagementEvents(customerId, asOfDate)
+  const events = listCustomerEngagementEvents(customerId, asOfDate).filter((e) => e.eventDate <= asOfDate)
   if (events.length === 0) return 55
   let score = 72
   for (const e of events.slice(0, 5)) {

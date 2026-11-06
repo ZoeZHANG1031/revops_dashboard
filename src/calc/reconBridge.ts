@@ -44,7 +44,7 @@ export function computeReconciliationBridge(data: DataStore, filters: GlobalFilt
       key: 'expected',
       label: 'Expected Charges',
       amount: expected,
-      note: 'Billable lots shipped in window, re-rated at the effective rate card (gross, before discount)',
+      note: 'Gross expected: billable lots in window re-rated at effective rate card BEFORE contractual discounts',
       diffClass: 'Baseline',
     },
     {
@@ -105,9 +105,9 @@ export function computeReconciliationBridge(data: DataStore, filters: GlobalFilt
     },
     {
       key: 'actual',
-      label: 'Actual Net Charges',
+      label: 'Actual Net Billing',
       amount: actual,
-      note: 'Non-duplicate billing lines in billing period',
+      note: 'Non-duplicate billing lines in filter window (net of discounts/credits)',
       diffClass: 'Baseline',
     },
   ]

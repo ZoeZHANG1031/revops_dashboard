@@ -1,4 +1,5 @@
-import { filterBillingLines, filterCosts, filterExceptions, filterInvoices, filterShipments } from '@/lib/filters'
+import { filterBillingLines, filterCosts, filterExceptions } from '@/lib/filters'
+import { computeArSnapshot } from '@/calc/arSnapshot'
 import { money, sumMoney } from '@/lib/money'
 import type { DataStore, GlobalFilters } from '@/types'
 import type { CustomerHealthRow, HealthBand } from '@/calc/customerHealth'
@@ -10,7 +11,7 @@ export type RiskType =
   | 'Volume Decline'
   | 'Margin Compression'
   | 'Operational Deterioration'
-  | 'Billing Disputes'
+  | 'Billing Exceptions'
   | 'Collection Risk'
   | 'Contract Renewal Risk'
   | 'Engagement Risk'
@@ -60,29 +61,22 @@ const VARIABLE = new Set([
   'Other Variable',
 ])
 
-function paidByInvoice(data: DataStore): Map<string, number> {
-  const m = new Map<string, number>()
-  for (const p of data.payments) {
-    m.set(p.invoice_id, (m.get(p.invoice_id) ?? 0) + p.amount)
-  }
-  return m
+/** Point-in-time AR as of the As-of Date (payments applied ≤ as-of, overdue = past due date) — same as Collections */
+function arBalances(data: DataStore, customerId: string, filters: GlobalFilters) {
+  const ar = computeArSnapshot(data, { ...filters, customerIds: [customerId] })
+  return { openAr: ar.outstandingAr, overdueAr: ar.overdueAr }
 }
 
-function arBalances(data: DataStore, customerId: string, filters: GlobalFilters) {
-  const invoices = filterInvoices(data, { ...filters, customerIds: [customerId] })
-  const paid = paidByInvoice(data)
-  const openAr = sumMoney(
-    invoices
-      .filter((i) => i.status !== 'Paid')
-      .map((i) => money(Math.max(0, i.net_amount - (paid.get(i.invoice_id) ?? 0)))),
-  )
-  const overdueAr = sumMoney(
-    invoices
-      .filter((i) => i.status === 'Overdue')
-      .map((i) => money(Math.max(0, i.net_amount - (paid.get(i.invoice_id) ?? 0)))),
-  )
-  return { openAr, overdueAr }
-}
+/** Demo-configuration thresholds for risk tags (shared with Customer 360 evidence) */
+export const RISK_RULES = {
+  revenueDeclinePct: -10,
+  volumeDeclinePct: -10,
+  marginFloorPct: 18,
+  marginDropPts: 5,
+  deliveryScoreFloor: 55,
+  billingScoreFloor: 55,
+  billingCaseCount: 3,
+} as const
 
 /**
  * Transparent risk rules — a customer may match multiple types.
@@ -93,20 +87,30 @@ export function classifyCustomerRisks(
 ): RiskType[] {
   const risks: RiskType[] = []
 
-  if (row.revenueGrowth != null && row.revenueGrowth <= -10) {
+  const inp = row.inputs
+  const volumeGrowth = extras.volumeGrowth ?? inp?.volumeGrowthPct ?? null
+  if (row.revenueGrowth != null && row.revenueGrowth <= RISK_RULES.revenueDeclinePct) {
     risks.push('Revenue Decline')
   }
-  if (row.volumeScore < 50 || (extras.volumeGrowth != null && extras.volumeGrowth <= -10)) {
+  if (volumeGrowth != null && volumeGrowth <= RISK_RULES.volumeDeclinePct) {
     risks.push('Volume Decline')
   }
-  if (row.contributionMargin != null && row.contributionMargin < 18) {
+  const priorCm = inp?.priorContributionMargin ?? null
+  if (
+    row.contributionMargin != null &&
+    (row.contributionMargin < RISK_RULES.marginFloorPct ||
+      (priorCm != null && row.contributionMargin <= priorCm - RISK_RULES.marginDropPts))
+  ) {
     risks.push('Margin Compression')
   }
-  if (row.deliveryScore < 55) {
+  if ((inp?.observed.delivery ?? true) && row.deliveryScore < RISK_RULES.deliveryScoreFloor) {
     risks.push('Operational Deterioration')
   }
-  if (row.billingExceptionCount >= 3 || row.issueScore < 55) {
-    risks.push('Billing Disputes')
+  if (
+    row.billingExceptionCount > 0 &&
+    (row.billingExceptionCount >= RISK_RULES.billingCaseCount || row.issueScore < RISK_RULES.billingScoreFloor)
+  ) {
+    risks.push('Billing Exceptions')
   }
 
   return risks
@@ -118,7 +122,7 @@ export function classifyCustomerRisksWithAr(
   extras: CustomerRiskExtras & { overdueAr: number; openAr?: number },
 ): RiskType[] {
   const risks = classifyCustomerRisks(row, extras)
-  if (extras.overdueAr > 0 || row.paymentAgingDays > 0) {
+  if (extras.overdueAr > 0.005) {
     if (!risks.includes('Collection Risk')) risks.push('Collection Risk')
   }
 
@@ -161,23 +165,7 @@ export function buildCustomerRiskProfile(
   const varCost = sumMoney(costs.map((c) => c.amount))
   const contributionProfit = money(revenue - varCost)
 
-  let volumeGrowth: number | null = extras.volumeGrowth ?? null
-  if (volumeGrowth == null && row.priorRevenue > 0) {
-    const pyStart = `${Number(filters.startPeriod.slice(0, 4)) - 1}${filters.startPeriod.slice(4)}`
-    const pyEnd = `${Number(filters.endPeriod.slice(0, 4)) - 1}${filters.endPeriod.slice(4)}`
-    const histStart = data.meta.history_start ?? '0000-00'
-    if (pyStart >= histStart) {
-      const curVol = sumMoney(
-        filterShipments(data, scope).map((s) => s.package_count),
-      )
-      const priorVol = sumMoney(
-        filterShipments(data, { ...scope, startPeriod: pyStart, endPeriod: pyEnd }).map(
-          (s) => s.package_count,
-        ),
-      )
-      if (priorVol > 0) volumeGrowth = money(((curVol - priorVol) / priorVol) * 100)
-    }
-  }
+  const volumeGrowth: number | null = extras.volumeGrowth ?? row.inputs?.volumeGrowthPct ?? null
 
   const contract = computeCustomerContractHealth(data, filters, row.customerId)
   const asOf = extras.asOf ?? data.meta.as_of_date ?? '2026-11-05'

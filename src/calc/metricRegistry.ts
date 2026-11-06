@@ -324,7 +324,7 @@ export const METRIC_REGISTRY: Record<MetricId, MetricMeta> = {
     chineseName: '情景风险收入',
     grain: 'Customer',
     dateBasis: 'Forward forecast periods after filter end',
-    includes: 'Expected future revenue × assumed loss fraction from health bands',
+    includes: 'Expected future revenue × band stress factor (demo assumption)',
     excludes: 'Confirmed leakage; Overdue AR; Booked losses',
     actionHint: 'Retention QBRs — label as scenario, not churn model.',
   },
@@ -499,17 +499,20 @@ export function computeSharedMetrics(
   data: DataStore,
   filters: GlobalFilters,
   scenario: 'Base' | 'Upside' | 'Downside' = 'Base',
+  asOf?: string | null,
 ): SharedMetrics {
-  const key = filterCacheKey(filters, [scenario, `exc:${data.exceptions.length}`])
+  const asOfKey = asOf?.slice(0, 10) ?? data.meta.as_of_date
+  const key = filterCacheKey(filters, [scenario, `exc:${data.exceptions.length}`, `asOf:${asOfKey}`])
   const cached = sharedMetricsMemo.get(data, key)
   if (cached) return cached
-  return sharedMetricsMemo.set(data, key, computeSharedMetricsFresh(data, filters, scenario))
+  return sharedMetricsMemo.set(data, key, computeSharedMetricsFresh(data, filters, scenario, asOfKey))
 }
 
 function computeSharedMetricsFresh(
   data: DataStore,
   filters: GlobalFilters,
   scenario: 'Base' | 'Upside' | 'Downside',
+  asOf?: string | null,
 ): SharedMetrics {
   const lines = filterBillingLines(data, filters)
   const netBilledRevenue = sumMoney(lines.map((l) => l.net_amount))
@@ -529,8 +532,8 @@ function computeSharedMetricsFresh(
       })
       .map((p) => p.amount),
   )
-  // AR snapshot: same population as Collections aging (filterInvoices × remaining balance)
-  const ar = computeArSnapshot(data, filters)
+  // AR snapshot: same population as Collections aging (activity period × as-of cash application)
+  const ar = computeArSnapshot(data, filters, asOf)
   const overdueAr = ar.overdueAr
   const accountsReceivable = ar.outstandingAr
 

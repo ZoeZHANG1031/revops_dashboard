@@ -33,7 +33,7 @@ export function buildExecutiveInsight(
   const signals = [
     `Recognized ${formatCurrency(m.recognizedRevenue, true)} vs Existing Forecast ${formatCurrency(m.forecastExisting, true)} (${formatCurrency(m.forecastVarianceExisting, true)}; ${formatPercent(varPct)})`,
     `CM ${formatPercent(m.contributionMargin)} · Contrib ${formatCurrency(m.contributionProfit, true)} · OP ${formatCurrency(m.operatingProfit, true)} after allocated fixed`,
-    `Open recoverable leakage ${formatCurrency(m.openRecoverableLeakage, true)} · Overdue AR ${formatCurrency(m.overdueAr, true)} (cash, not booked loss) · Scenario RaR ${formatCurrency(m.scenarioRevenueAtRisk, true)}`,
+    `Open recoverable leakage ${formatCurrency(m.openRecoverableLeakage, true)} · Overdue AR ${formatCurrency(m.overdueAr, true)} (cash, not booked loss) · Scenario Revenue Exposure ${formatCurrency(m.scenarioRevenueAtRisk, true)}`,
   ]
 
   const recommendedActions: string[] = []

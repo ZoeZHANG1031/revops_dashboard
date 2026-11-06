@@ -1,4 +1,5 @@
-import { filterBillingLines, filterCosts, priorPeriodRange, shipmentMetro } from '@/lib/filters'
+import { filterBillingLines, filterCosts, shipmentMetro } from '@/lib/filters'
+import { customerComparisonWindow } from './customerComparison'
 import { createCalcMemo, filterCacheKey } from '@/lib/memoCalc'
 import { pkgs } from '@/lib/pricing'
 import { money, pct, sumMoney } from '@/lib/money'
@@ -83,10 +84,10 @@ function totalVar(costs: Record<CostBucket, number>): number {
 function cppBucket(costs: Record<CostBucket, number>, vol: number): Record<CostBucket, number> {
   if (vol <= 0) return { dsp: 0, sorting: 0, linehaul: 0, other: 0 }
   return {
-    dsp: money(costs.dsp / vol),
-    sorting: money(costs.sorting / vol),
-    linehaul: money(costs.linehaul / vol),
-    other: money(costs.other / vol),
+    dsp: costs.dsp / vol,
+    sorting: costs.sorting / vol,
+    linehaul: costs.linehaul / vol,
+    other: costs.other / vol,
   }
 }
 
@@ -150,8 +151,10 @@ function computeCustomerMarginDiagnosisFresh(
   filters: GlobalFilters,
   customerId: string,
 ): CustomerMarginDiagnosis {
-  const prior = priorPeriodRange(filters)
-  const priorLabel = `${prior.startPeriod} → ${prior.endPeriod}`
+  // Shared comparison window (same months prior year) — identical to Health Score and revenue bridge
+  const win = customerComparisonWindow(data, filters)
+  const prior = win.prior ?? { startPeriod: '0000-00', endPeriod: '0000-00' }
+  const priorLabel = win.prior ? `${win.prior.startPeriod} → ${win.prior.endPeriod}` : 'N/A (before history)'
   const currentLabel = `${filters.startPeriod} → ${filters.endPeriod}`
 
   const curF: GlobalFilters = { ...filters, customerIds: [customerId] }
@@ -174,10 +177,10 @@ function computeCustomerMarginDiagnosisFresh(
   const cpChange = money(currentCP - priorCP)
   const comparable = V0 > 0 && (R0 !== 0 || C0 !== 0)
 
-  const rpp0 = V0 > 0 ? money(R0 / V0) : 0
-  const rpp1 = V1 > 0 ? money(R1 / V1) : 0
-  const cpp0 = V0 > 0 ? money(C0 / V0) : 0
-  const cpp1 = V1 > 0 ? money(C1 / V1) : 0
+  const rpp0 = V0 > 0 ? R0 / V0 : 0
+  const rpp1 = V1 > 0 ? R1 / V1 : 0
+  const cpp0 = V0 > 0 ? C0 / V0 : 0
+  const cpp1 = V1 > 0 ? C1 / V1 : 0
 
   const volumeImpact = comparable ? money((V1 - V0) * (rpp0 - cpp0)) : 0
   const yieldImpact = comparable ? money(V1 * (rpp1 - rpp0)) : 0

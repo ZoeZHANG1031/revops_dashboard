@@ -16,7 +16,8 @@ function moduleActive(mod: NavModule, pathname: string): boolean {
   return mod.children?.some((c) => childActive(c.path, pathname)) ?? false
 }
 
-export function Sidebar() {
+/** Desktop: fixed column. Below md: off-canvas drawer controlled by AppShell. */
+export function Sidebar({ mobileOpen = false, onClose }: { mobileOpen?: boolean; onClose?: () => void } = {}) {
   const { pathname, search } = useLocation()
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
 
@@ -54,7 +55,12 @@ export function Sidebar() {
     }`
 
   return (
-    <aside className="flex w-64 shrink-0 flex-col border-r border-[#dce6df] bg-white">
+    <>
+    {mobileOpen && <div className="fixed inset-0 z-30 bg-black/30 md:hidden" onClick={onClose} aria-hidden />}
+    <aside
+      className={`${mobileOpen ? 'fixed inset-y-0 left-0 z-40 flex shadow-xl' : 'hidden'} w-64 shrink-0 flex-col border-r border-[#dce6df] bg-white md:static md:z-auto md:flex md:shadow-none`}
+      aria-label="Main navigation"
+    >
       <div className="border-b border-[#dce6df] px-4 py-5">
         <div className="flex items-center gap-2.5">
           <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-forest text-lime">
@@ -66,7 +72,12 @@ export function Sidebar() {
           </div>
         </div>
       </div>
-      <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto p-2">
+      <nav
+        className="flex flex-1 flex-col gap-0.5 overflow-y-auto p-2"
+        onClick={(e) => {
+          if ((e.target as HTMLElement).closest('a')) onClose?.()
+        }}
+      >
         {NAV_MODULES.map((mod) => {
           if (mod.children) {
             const open = expanded[mod.id] ?? false
@@ -120,5 +131,6 @@ export function Sidebar() {
         Independent demo inspired by last-mile ops visuals. Not a Jitsu product. Synthetic data only.
       </div>
     </aside>
+    </>
   )
 }

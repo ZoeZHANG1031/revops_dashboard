@@ -73,10 +73,11 @@ describe('visual upgrade calculations', { timeout: 60000 }, () => {
     expect(sum('contributionShare')).toBeCloseTo(100, 0)
     for (const m of o.metros) {
       if (m.exceptionRate != null) expect(m.exceptionRate).toBeGreaterThanOrEqual(0)
-      expect(m.contribution).toBeCloseTo(
-        m.contributionMargin == null ? m.contribution : (m.revenue * m.contributionMargin) / 100,
-        0,
-      )
+      // contributionMargin is a display % rounded to 0.01pt → allow half a step of revenue
+      if (m.contributionMargin != null)
+        expect(Math.abs(m.contribution - (m.revenue * m.contributionMargin) / 100)).toBeLessThanOrEqual(
+          Math.abs(m.revenue) * 0.00005 + 0.5,
+        )
     }
   })
 

@@ -148,16 +148,25 @@ export function resolveEntity(data: DataStore, entityType: EntityType, entityId:
       return {
         ...base,
         title: o.prospect_name,
-        subtitle: `${o.stage} · win ${Math.round(o.win_probability * 100)}%`,
+        subtitle: `${o.stage} · ${o.segment} · win ${Math.round(o.win_probability * 100)}%`,
         overview: [
           { label: 'Opportunity ID', value: o.opportunity_id },
           { label: 'Customer', value: na(o.customer_id) },
-          { label: 'Expected Start', value: o.expected_start_date },
+          { label: 'Segment', value: o.segment },
+          { label: 'Owner (demo)', value: o.owner_name },
+          { label: 'Expected Close', value: o.expected_close_date },
+          { label: 'Expected Service Start', value: o.expected_start_date },
+          { label: 'Next Step (demo)', value: o.next_step },
+          { label: 'Next Follow-up (demo)', value: o.next_follow_up_date },
           { label: 'Created', value: o.created_date },
           { label: 'Closed', value: na(o.closed_date) },
         ],
         financial: [
-          { label: 'Opportunity Value', value: formatCurrencyPrecise(o.opportunity_value) },
+          { label: 'Opportunity Value (TCV)', value: formatCurrencyPrecise(o.opportunity_value) },
+          {
+            label: 'Weighted Value',
+            value: formatCurrencyPrecise(o.opportunity_value * o.win_probability),
+          },
           { label: 'Expected Monthly Revenue', value: formatCurrencyPrecise(o.expected_monthly_revenue) },
         ],
         linked: o.customer_id
@@ -168,10 +177,20 @@ export function resolveEntity(data: DataStore, entityType: EntityType, entityId:
           ...(o.closed_date ? [{ date: o.closed_date, label: 'Closed' }] : []),
         ],
         exceptions: [],
-        actions: ['Sales pipeline stage is stock, not cohort conversion'],
+        actions: [
+          o.next_step ? `Demo next step: ${o.next_step}` : 'Sales pipeline stage is stock, not cohort conversion',
+        ],
         dataSource: {
           table: 'fact_opportunity',
-          fields: ['opportunity_id', 'stage', 'opportunity_value'],
+          fields: [
+            'opportunity_id',
+            'stage',
+            'segment',
+            'opportunity_value',
+            'expected_close_date',
+            'expected_start_date',
+            'next_step',
+          ],
           version: data.meta.snapshot_label,
         },
       }

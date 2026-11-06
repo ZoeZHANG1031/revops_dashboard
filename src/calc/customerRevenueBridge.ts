@@ -1,4 +1,5 @@
-import { filterBillingLines, priorPeriodRange, shipmentMetro } from '@/lib/filters'
+import { filterBillingLines, shipmentMetro } from '@/lib/filters'
+import { customerComparisonWindow } from './customerComparison'
 import { createCalcMemo, filterCacheKey } from '@/lib/memoCalc'
 import { pkgs } from '@/lib/pricing'
 import { money } from '@/lib/money'
@@ -36,6 +37,7 @@ export interface CustomerRevenueBridge {
   note: string
 }
 
+/** net = pre-credit billing (net_amount + credits); credits are bridged separately so they are not counted twice */
 type CellAgg = { vol: number; net: number; credits: number }
 
 const bridgeMemo = createCalcMemo<CustomerRevenueBridge>(32)
@@ -67,7 +69,7 @@ function aggregateCustomerLines(
   const bump = (map: Map<string, CellAgg>, key: string, l: FactBillingLine) => {
     const cur = map.get(key) ?? { vol: 0, net: 0, credits: 0 }
     cur.vol += l.package_count
-    cur.net += l.net_amount
+    cur.net += l.net_amount + l.credits
     cur.credits += l.credits
     map.set(key, cur)
   }
@@ -98,7 +100,7 @@ function aggregateCustomerLines(
 }
 
 function rpp(agg: CellAgg): number {
-  return agg.vol > 0 ? money(agg.net / agg.vol) : 0
+  return agg.vol > 0 ? agg.net / agg.vol : 0
 }
 
 function shareWeights(map: Map<string, CellAgg>, totalVol: number): Map<string, number> {
@@ -113,12 +115,14 @@ function laspeyresMix(
   w1: Map<string, number>,
   rpp0ByKey: Map<string, number>,
   v1: number,
+  fallbackRpp: number,
 ): number {
   let sum = 0
   const keys = new Set([...w0.keys(), ...w1.keys()])
   keys.forEach((k) => {
     const dw = (w1.get(k) ?? 0) - (w0.get(k) ?? 0)
-    sum += dw * (rpp0ByKey.get(k) ?? 0)
+    // New cells are valued at the prior average yield — the same fallback the price effect uses
+    sum += dw * (rpp0ByKey.get(k) ?? fallbackRpp)
   })
   return money(v1 * sum)
 }
@@ -173,9 +177,11 @@ function computeCustomerRevenueBridgeFresh(
   filters: GlobalFilters,
   customerId: string,
 ): CustomerRevenueBridge {
-  const priorRange = priorPeriodRange(filters)
+  // Shared comparison window (same months prior year) — identical to Health Score revenue growth
+  const win = customerComparisonWindow(data, filters)
+  const priorRange = win.prior ?? { startPeriod: '0000-00', endPeriod: '0000-00' }
   const currentLabel = `${filters.startPeriod} → ${filters.endPeriod}`
-  const priorLabel = `${priorRange.startPeriod} → ${priorRange.endPeriod}`
+  const priorLabel = win.prior ? `${win.prior.startPeriod} → ${win.prior.endPeriod}` : 'N/A (before history)'
 
   const curFilters: GlobalFilters = { ...filters, customerIds: [customerId] }
   const priorFilters: GlobalFilters = { ...filters, ...priorRange, customerIds: [customerId] }
@@ -190,7 +196,8 @@ function computeCustomerRevenueBridgeFresh(
   const comparable = priorVolume > 0 && priorRevenue !== 0
 
   const revenueChange = money(currentRevenue - priorRevenue)
-  const RPP0 = priorVolume > 0 ? money(priorRevenue / priorVolume) : 0
+  // Pre-credit yield: credits get their own bar
+  const RPP0 = priorVolume > 0 ? (priorRevenue + priorAgg.credits) / priorVolume : 0
 
   const volumeImpact = comparable ? money((currentVolume - priorVolume) * RPP0) : 0
 
@@ -200,14 +207,14 @@ function computeCustomerRevenueBridgeFresh(
   priorAgg.byService.forEach((v, k) => rpp0Service.set(k, rpp(v)))
 
   const serviceMixImpact = comparable
-    ? laspeyresMix(w0s, w1s, rpp0Service, currentVolume)
+    ? laspeyresMix(w0s, w1s, rpp0Service, currentVolume, RPP0)
     : 0
 
   const w0c = shareWeights(priorAgg.byCell, priorVolume)
   const w1c = shareWeights(curAgg.byCell, currentVolume)
   const rpp0Cell = new Map<string, number>()
   priorAgg.byCell.forEach((v, k) => rpp0Cell.set(k, rpp(v)))
-  const mixTotal = comparable ? laspeyresMix(w0c, w1c, rpp0Cell, currentVolume) : 0
+  const mixTotal = comparable ? laspeyresMix(w0c, w1c, rpp0Cell, currentVolume, RPP0) : 0
   const geoMixImpact = money(mixTotal - serviceMixImpact)
 
   let priceImpact = 0
@@ -231,14 +238,14 @@ function computeCustomerRevenueBridgeFresh(
   )
 
   const waterfall: WaterfallStep[] = [
-    { key: 'prior', label: 'Prior Period Revenue', amount: priorRevenue },
-    { key: 'volume', label: 'Volume Impact', amount: volumeImpact },
-    { key: 'serviceMix', label: 'Service Mix Impact', amount: serviceMixImpact },
-    { key: 'geoMix', label: 'Geo Mix Impact', amount: geoMixImpact },
-    { key: 'price', label: 'Price / RPP Impact', amount: priceImpact },
-    { key: 'credits', label: 'Credits Impact', amount: creditsImpact },
-    { key: 'residual', label: 'Unexplained Residual', amount: residual },
-    { key: 'current', label: 'Current Period Revenue', amount: currentRevenue },
+    { key: 'prior', label: `Net Billing ${priorLabel}`, shortLabel: 'Prior', amount: priorRevenue },
+    { key: 'volume', label: 'Volume effect (billed packages × prior yield)', shortLabel: 'Volume', amount: volumeImpact },
+    { key: 'serviceMix', label: 'Service mix effect', shortLabel: 'Service mix', amount: serviceMixImpact },
+    { key: 'geoMix', label: 'Geography mix effect', shortLabel: 'Geo mix', amount: geoMixImpact },
+    { key: 'price', label: 'Price / yield effect', shortLabel: 'Price', amount: priceImpact },
+    { key: 'credits', label: 'Credits effect', shortLabel: 'Credits', amount: creditsImpact },
+    { key: 'residual', label: 'Unexplained residual', shortLabel: 'Residual', amount: residual },
+    { key: 'current', label: `Net Billing ${currentLabel}`, shortLabel: 'Current', amount: currentRevenue },
   ]
 
   return {
@@ -261,7 +268,7 @@ function computeCustomerRevenueBridgeFresh(
     volumeBreakdown: buildVolumeBreakdown(priorAgg, curAgg),
     waterfall,
     note: comparable
-      ? 'Mix split: service-only Laspeyres first; geo mix = cell mix − service mix. Residual retains timing / unallocated grain.'
+      ? 'Arithmetic attribution of Net Billing change (not a business root cause). Volume = Δ billed packages × prior pre-credit yield; mix = Laspeyres (service first, geo = cell − service); price = yield change on current packages; credits separate. Residual = rounding.'
       : 'Insufficient prior-window billing for a full mix/price bridge.',
   }
 }

@@ -123,6 +123,9 @@ interface AppContextValue {
   periods: string[]
   dateBasis: DateBasis
   setDateBasis: (d: DateBasis) => void
+  /** Point-in-time for AR / open balances / case status — distinct from Activity Period */
+  asOfDate: string
+  setAsOfDate: (d: string) => void
   localFilters: LocalAnalysisFilters
   setLocalFilters: (
     f: LocalAnalysisFilters | ((prev: LocalAnalysisFilters) => LocalAnalysisFilters),
@@ -207,6 +210,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [healthWeights, setHealthWeights] = useState<HealthWeights>(DEFAULT_HEALTH_WEIGHTS)
   const [drillStack, setDrillStack] = useState<DrillNode[]>([])
   const [dateBasis, setDateBasis] = useState<DateBasis>('recognition')
+  const [asOfDate, setAsOfDateState] = useState<string>(baseData.meta.as_of_date)
   const [localFilters, setLocalFilters] = useState<LocalAnalysisFilters>(DEFAULT_LOCAL)
   const [highlightCustomerId, setHighlightCustomerId] = useState<string | null>(null)
   const [openEntity, setOpenEntity] = useState<OpenEntityState | null>(null)
@@ -377,11 +381,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setScenarioState('Base')
     setScenarioParams(DEFAULT_SCENARIO_PARAMS.Base)
     setDateBasis('recognition')
+    setAsOfDateState(baseData.meta.as_of_date)
     setInvestigationState(DEFAULT_INVESTIGATION)
     setNavPath([])
     setContextFeedback('Reset to company defaults')
     writeUrl(defaultFilt, 'Base', 'recognition', DEFAULT_LOCAL, null, null, DEFAULT_INVESTIGATION)
-  }, [defaultFilt, writeUrl])
+  }, [defaultFilt, writeUrl, baseData.meta.as_of_date])
 
   const clearSelection = useCallback(() => {
     setHighlightCustomerId(null)
@@ -647,6 +652,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setDateBasis: (d) => {
       setDateBasis(d)
       writeUrl(filters, scenario, d, localFilters, highlightCustomerId, openEntity)
+    },
+    asOfDate,
+    setAsOfDate: (d) => {
+      const next = d.slice(0, 10)
+      setAsOfDateState(next > baseData.meta.as_of_date ? baseData.meta.as_of_date : next)
     },
     localFilters,
     setLocalFilters: (f) => {

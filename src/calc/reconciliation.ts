@@ -163,12 +163,23 @@ export function classifyExceptionNature(exc: FactException): {
 export function validateBillingVsInvoice(data: DataStore): { ok: boolean; details: string[] } {
   const details: string[] = []
   let ok = true
+  const linesByInv = new Map<string, number[]>()
+  for (const b of data.billingLines) {
+    if (b.is_duplicate || !b.invoice_id) continue
+    const l = linesByInv.get(b.invoice_id) ?? []
+    l.push(b.net_amount)
+    linesByInv.set(b.invoice_id, l)
+  }
+  const creditsByInv = new Map<string, number[]>()
+  for (const c of data.creditMemos) {
+    if (!c.invoice_id) continue
+    const l = creditsByInv.get(c.invoice_id) ?? []
+    l.push(c.amount)
+    creditsByInv.set(c.invoice_id, l)
+  }
   data.invoices.forEach((inv) => {
-    const lines = data.billingLines.filter((b) => b.invoice_id === inv.invoice_id && !b.is_duplicate)
-    const lineNet = sumMoney(lines.map((l) => l.net_amount))
-    const credits = sumMoney(
-      data.creditMemos.filter((c) => c.invoice_id === inv.invoice_id).map((c) => c.amount),
-    )
+    const lineNet = sumMoney(linesByInv.get(inv.invoice_id) ?? [])
+    const credits = sumMoney(creditsByInv.get(inv.invoice_id) ?? [])
     const expected = money(lineNet - credits)
     if (Math.abs(money(expected - inv.net_amount)) > 0.02) {
       ok = false

@@ -1,6 +1,8 @@
+import { useState } from 'react'
 import { useApp } from '@/context/AppContext'
 import { REGIONS as NETWORK_REGIONS, METRO_DEFINITIONS } from '@/data/metros'
 import type { DateBasis } from '@/lib/analysisUrl'
+import { periodEndDate } from '@/lib/asOf'
 import { DATE_PRESETS, resolveDatePreset, type DatePresetId } from '@/lib/filters'
 import type { RegionCode, ServiceType } from '@/types'
 
@@ -25,9 +27,14 @@ export function GlobalFiltersBar() {
     setScenario,
     dateBasis,
     setDateBasis,
+    asOfDate,
+    setAsOfDate,
     clearFilters,
     localFilters,
+    setLocalFilters,
   } = useApp()
+  const [moreOpen, setMoreOpen] = useState(false)
+  const snapshotAsOf = data.meta.as_of_date
 
   const historicalPeriods = periods.filter((p) => data.dates.some((d) => d.date_key.startsWith(p)))
   const stations = (data.stations ?? []).filter(
@@ -42,24 +49,77 @@ export function GlobalFiltersBar() {
     setFilters({ ...filters, ...range })
   }
 
+  const chips: { key: string; label: string; clear: () => void }[] = []
+  if (filters.customerIds[0]) {
+    const name =
+      data.customers.find((c) => c.customer_id === filters.customerIds[0])?.customer_name ??
+      filters.customerIds[0]
+    chips.push({
+      key: 'cust',
+      label: name,
+      clear: () => setFilters({ ...filters, customerIds: [] }),
+    })
+  }
+  if (filters.regions[0]) {
+    chips.push({
+      key: 'reg',
+      label: filters.regions[0],
+      clear: () => setFilters({ ...filters, regions: [], metros: [], stations: [] }),
+    })
+  }
+  if (filters.metros[0]) {
+    chips.push({
+      key: 'metro',
+      label: filters.metros[0],
+      clear: () => setFilters({ ...filters, metros: [], stations: [] }),
+    })
+  }
+  if (filters.stations?.[0]) {
+    const st = data.stations.find((s) => s.station_id === filters.stations![0])
+    chips.push({
+      key: 'stn',
+      label: st?.station_name ?? filters.stations[0],
+      clear: () => setFilters({ ...filters, stations: [] }),
+    })
+  }
+  if (filters.serviceTypes[0]) {
+    chips.push({
+      key: 'svc',
+      label: filters.serviceTypes[0],
+      clear: () => setFilters({ ...filters, serviceTypes: [] }),
+    })
+  }
+  if (localFilters.exceptionType) {
+    chips.push({
+      key: 'exc',
+      label: localFilters.exceptionType,
+      clear: () => setLocalFilters({ ...localFilters, exceptionType: null, exceptionStatus: null }),
+    })
+  }
+  if (localFilters.exceptionStatus) {
+    chips.push({
+      key: 'exs',
+      label: localFilters.exceptionStatus,
+      clear: () => setLocalFilters({ ...localFilters, exceptionStatus: null }),
+    })
+  }
+  if (localFilters.pipelineStage) {
+    chips.push({
+      key: 'pipe',
+      label: `Stage: ${localFilters.pipelineStage}`,
+      clear: () => setLocalFilters({ ...localFilters, pipelineStage: null }),
+    })
+  }
+
+  const moreActive =
+    filters.metros.length > 0 ||
+    (filters.stations?.length ?? 0) > 0 ||
+    filters.serviceTypes.length > 0 ||
+    scenario !== 'Base' ||
+    dateBasis !== 'recognition'
+
   return (
-    <div className="space-y-1.5 border-b border-[#e1e9e4] bg-white/80 px-6 py-2.5 backdrop-blur">
-      <div className="flex flex-wrap items-center gap-1.5">
-        <span className="mr-1 text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
-          Date
-        </span>
-        {DATE_PRESETS.map((p) => (
-          <button
-            key={p.id}
-            type="button"
-            className="rounded-md border border-[#dce6df] bg-white px-2 py-0.5 text-[11px] font-medium text-ink-muted hover:border-brand-600 hover:text-brand-700"
-            onClick={() => applyPreset(p.id)}
-          >
-            {p.label}
-          </button>
-        ))}
-        <span className="ml-1 text-[10px] text-ink-muted">or Custom ↓</span>
-      </div>
+    <div className="space-y-1.5 border-b border-[#e1e9e4] bg-white/80 px-4 py-2 md:px-6 backdrop-blur">
       <div className="flex flex-wrap items-end gap-x-3 gap-y-2">
         <FilterField label="From">
           <select
@@ -127,128 +187,194 @@ export function GlobalFiltersBar() {
             ))}
           </select>
         </FilterField>
-        <FilterField label="Metro">
-          <select
-            className="filter-input min-w-[120px]"
-            value={filters.metros[0] ?? ''}
-            onChange={(e) => {
-              const metro = e.target.value
-              if (!metro) {
-                setFilters({ ...filters, metros: [], stations: [] })
-                return
-              }
-              const def = METRO_DEFINITIONS.find((m) => m.metro === metro)
-              setFilters({
-                ...filters,
-                metros: [metro],
-                stations: [],
-                regions: def ? [def.region] : filters.regions,
-              })
-            }}
-          >
-            <option value="">All metros</option>
-            {METRO_DEFINITIONS.filter(
-              (m) => filters.regions.length === 0 || filters.regions.includes(m.region),
-            ).map((m) => (
-              <option key={m.metro} value={m.metro}>
-                {m.metro}
-              </option>
-            ))}
-          </select>
+        <FilterField label="As-of Date">
+          <div className="flex items-center gap-1">
+            <input
+              type="date"
+              className="filter-input"
+              max={snapshotAsOf}
+              value={asOfDate.slice(0, 10)}
+              onChange={(e) => setAsOfDate(e.target.value)}
+              title="Point-in-time for balances, aging, and open cases — not the activity period"
+            />
+            <button
+              type="button"
+              className="rounded border border-[#dce6df] px-1.5 py-1 text-[10px] text-ink-muted hover:border-brand-400"
+              title="Use dataset snapshot as-of"
+              onClick={() => setAsOfDate(snapshotAsOf)}
+            >
+              Snapshot
+            </button>
+            <button
+              type="button"
+              className="rounded border border-[#dce6df] px-1.5 py-1 text-[10px] text-ink-muted hover:border-brand-400"
+              title="Use activity period end (capped at snapshot)"
+              onClick={() => setAsOfDate(periodEndDate(filters.endPeriod))}
+            >
+              Period end
+            </button>
+          </div>
         </FilterField>
-        <FilterField label="Station">
-          <select
-            className="filter-input min-w-[140px]"
-            value={filters.stations?.[0] ?? ''}
-            onChange={(e) => {
-              const stationId = e.target.value
-              if (!stationId) {
-                setFilters({ ...filters, stations: [] })
-                return
-              }
-              const st = data.stations.find((s) => s.station_id === stationId)
-              setFilters({
-                ...filters,
-                stations: [stationId],
-                metros: st ? [st.metro] : filters.metros,
-                regions: st ? [st.region] : filters.regions,
-              })
-            }}
-          >
-            <option value="">All stations</option>
-            {stations.map((s) => (
-              <option key={s.station_id} value={s.station_id}>
-                {s.station_name}
-              </option>
-            ))}
-          </select>
-        </FilterField>
-        <FilterField label="Service Type">
-          <select
-            className="filter-input"
-            value={filters.serviceTypes[0] ?? ''}
-            onChange={(e) =>
-              setFilters({
-                ...filters,
-                serviceTypes: e.target.value ? [e.target.value as ServiceType] : [],
-              })
-            }
-          >
-            <option value="">All services</option>
-            {SERVICES.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-        </FilterField>
-        <FilterField label="Scenario">
-          <select
-            className="filter-input"
-            value={scenario}
-            onChange={(e) => setScenario(e.target.value as 'Base' | 'Upside' | 'Downside')}
-          >
-            <option value="Base">Base</option>
-            <option value="Upside">Upside</option>
-            <option value="Downside">Downside</option>
-          </select>
-        </FilterField>
-        <FilterField label="Date Basis">
-          <select
-            className="filter-input"
-            value={dateBasis}
-            onChange={(e) => setDateBasis(e.target.value as DateBasis)}
-            title="Labels the analysis context. Each KPI keeps its native date field (see metric tooltips) — never subtract KPIs with different date bases."
-          >
-            {DATE_BASIS.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.label}
-              </option>
-            ))}
-          </select>
-        </FilterField>
-        {(localFilters.exceptionType || localFilters.exceptionStatus) && (
-          <FilterField label="Local (Recon)">
-            <div className="filter-input max-w-[200px] truncate bg-amber-50 text-[13px] text-warning">
-              {[localFilters.exceptionType, localFilters.exceptionStatus].filter(Boolean).join(' · ')}
-            </div>
-          </FilterField>
-        )}
-        {(filters.customerIds.length > 0 ||
-          filters.regions.length > 0 ||
-          filters.metros.length > 0 ||
-          (filters.stations?.length ?? 0) > 0 ||
-          filters.serviceTypes.length > 0) && (
+        <button
+          type="button"
+          className={`mb-0.5 rounded-md border px-2.5 py-1.5 text-[13px] font-medium ${
+            moreOpen || moreActive
+              ? 'border-forest bg-brand-50 text-forest'
+              : 'border-[#dce6df] text-ink-muted hover:bg-[#f5f8f5]'
+          }`}
+          onClick={() => setMoreOpen((v) => !v)}
+          aria-expanded={moreOpen}
+        >
+          More filters{moreActive ? ' ·' : ''}
+        </button>
+        {chips.length > 0 && (
           <button
             type="button"
             className="mb-0.5 rounded-md border border-[#dce6df] px-2.5 py-1.5 text-[13px] font-medium text-ink-muted hover:bg-[#f5f8f5]"
             onClick={clearFilters}
-            title="Clear global date/customer/region/metro/station/service/scenario filters"
+            title="Clear filters"
           >
-            Clear Filters
+            Clear
           </button>
         )}
       </div>
+
+      {moreOpen && (
+        <div className="flex flex-wrap items-end gap-x-3 gap-y-2 border-t border-[#eef3f0] pt-2">
+          <div className="flex flex-wrap items-center gap-1">
+            <span className="mr-1 text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
+              Date
+            </span>
+            {DATE_PRESETS.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className="rounded-md border border-[#dce6df] bg-white px-2 py-0.5 text-[11px] font-medium text-ink-muted hover:border-brand-600 hover:text-brand-700"
+                onClick={() => applyPreset(p.id)}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+          <FilterField label="Metro">
+            <select
+              className="filter-input min-w-[120px]"
+              value={filters.metros[0] ?? ''}
+              onChange={(e) => {
+                const metro = e.target.value
+                if (!metro) {
+                  setFilters({ ...filters, metros: [], stations: [] })
+                  return
+                }
+                const def = METRO_DEFINITIONS.find((m) => m.metro === metro)
+                setFilters({
+                  ...filters,
+                  metros: [metro],
+                  stations: [],
+                  regions: def ? [def.region] : filters.regions,
+                })
+              }}
+            >
+              <option value="">All metros</option>
+              {METRO_DEFINITIONS.filter(
+                (m) => filters.regions.length === 0 || filters.regions.includes(m.region),
+              ).map((m) => (
+                <option key={m.metro} value={m.metro}>
+                  {m.metro}
+                </option>
+              ))}
+            </select>
+          </FilterField>
+          <FilterField label="Station">
+            <select
+              className="filter-input min-w-[140px]"
+              value={filters.stations?.[0] ?? ''}
+              onChange={(e) => {
+                const stationId = e.target.value
+                if (!stationId) {
+                  setFilters({ ...filters, stations: [] })
+                  return
+                }
+                const st = data.stations.find((s) => s.station_id === stationId)
+                setFilters({
+                  ...filters,
+                  stations: [stationId],
+                  metros: st ? [st.metro] : filters.metros,
+                  regions: st ? [st.region] : filters.regions,
+                })
+              }}
+            >
+              <option value="">All stations</option>
+              {stations.map((s) => (
+                <option key={s.station_id} value={s.station_id}>
+                  {s.station_name}
+                </option>
+              ))}
+            </select>
+          </FilterField>
+          <FilterField label="Service Type">
+            <select
+              className="filter-input"
+              value={filters.serviceTypes[0] ?? ''}
+              onChange={(e) =>
+                setFilters({
+                  ...filters,
+                  serviceTypes: e.target.value ? [e.target.value as ServiceType] : [],
+                })
+              }
+            >
+              <option value="">All services</option>
+              {SERVICES.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </FilterField>
+          <FilterField label="Scenario">
+            <select
+              className="filter-input"
+              value={scenario}
+              onChange={(e) => setScenario(e.target.value as 'Base' | 'Upside' | 'Downside')}
+            >
+              <option value="Base">Base</option>
+              <option value="Upside">Upside</option>
+              <option value="Downside">Downside</option>
+            </select>
+          </FilterField>
+          <FilterField label="Date Basis">
+            <select
+              className="filter-input"
+              value={dateBasis}
+              onChange={(e) => setDateBasis(e.target.value as DateBasis)}
+              title="Labels the analysis context. Each KPI keeps its native date field."
+            >
+              {DATE_BASIS.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.label}
+                </option>
+              ))}
+            </select>
+          </FilterField>
+        </div>
+      )}
+
+      {chips.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {chips.map((c) => (
+            <button
+              key={c.key}
+              type="button"
+              onClick={c.clear}
+              className="inline-flex items-center gap-1 rounded-full border border-[#dce6df] bg-[#f7faf8] px-2 py-0.5 text-[11px] text-ink hover:border-brand-400"
+              title={`Clear ${c.label}`}
+            >
+              {c.label}
+              <span className="text-ink-muted">×</span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

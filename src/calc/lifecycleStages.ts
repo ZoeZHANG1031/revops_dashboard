@@ -86,14 +86,15 @@ export const STAGE_EXCEPTION_TYPES: Record<LifecycleNodeId, ExceptionType[]> = {
 }
 
 export const STATUS_RULE =
-  'Stage status: no open/investigating exceptions → Clear; any open High/Critical → Alert; otherwise Watch.'
+  'Nodes stay neutral unless open High/Critical (Alert) or other open exceptions (Watch).'
 
 function isOpen(e: FactException) {
   return e.status === 'Open' || e.status === 'Investigating' || e.status === 'Pending Approval'
 }
 
 function stageStatus(open: FactException[]): { status: LifecycleTone; statusLabel: string } {
-  if (open.length === 0) return { status: 'ok', statusLabel: 'Clear' }
+  // Neutral by default — green only when explicitly healthy is not claimed
+  if (open.length === 0) return { status: 'neutral', statusLabel: '' }
   if (open.some((e) => e.severity === 'Critical' || e.severity === 'High'))
     return { status: 'alert', statusLabel: 'Alert' }
   return { status: 'watch', statusLabel: 'Watch' }
@@ -103,6 +104,7 @@ export function computeLifecycleStages(
   data: DataStore,
   filters: GlobalFilters,
   scenario: 'Base' | 'Upside' | 'Downside' = 'Base',
+  asOfInput?: string | null,
 ) {
   const m = computeSharedMetrics(data, filters, scenario)
   const shipments = filterShipments(data, filters)
@@ -111,25 +113,31 @@ export function computeLifecycleStages(
   const open = exceptions.filter(isOpen)
   const openBy = (types: ExceptionType[]) => open.filter((e) => types.includes(e.exception_type))
 
+  const pointAsOf = (asOfInput ?? data.meta.as_of_date).slice(0, 10)
+  const winStart = `${filters.startPeriod}-01`
+  const winEnd = `${filters.endPeriod}-28`
   const customerScoped = filters.customerIds.length > 0
-  // Contracts effective at the end of the window (contracts are versioned over time)
-  const asOf = `${filters.endPeriod}-28`
-  const activeContracts = data.contracts.filter(
+  // Activity-period contract overlap (customers deduped) — distinct from contract row count
+  const periodContracts = data.contracts.filter(
     (c) =>
-      c.start_date <= asOf &&
-      c.end_date >= asOf &&
+      c.start_date <= winEnd &&
+      c.end_date >= winStart &&
+      c.status !== 'Pending' &&
       (!customerScoped || filters.customerIds.includes(c.customer_id)),
   )
-  const contractedCustomers = new Set(activeContracts.map((c) => c.customer_id))
+  const contractedCustomers = new Set(periodContracts.map((c) => c.customer_id))
   const shippingCustomers = new Set(shipments.map((s) => s.customer_id))
   const contractedShipping = [...contractedCustomers].filter((c) => shippingCustomers.has(c)).length
 
   const billable = shipments.filter((s) => s.billable)
-  // Billed set uses ALL non-duplicate billing lines (any period) so cross-period billing is a timing
-  // difference, not "unbilled".
-  const everBilled = new Set<string>()
-  for (const b of data.billingLines) if (!b.is_duplicate) everBilled.add(b.shipment_id)
-  const unbilledShipments = pkgs(billable.filter((s) => !everBilled.has(s.shipment_id)))
+  // As-of unbilled: only billing_date ≤ asOf counts as billed (not future-dated lines)
+  const billedByAsOf = new Set<string>()
+  for (const b of data.billingLines) {
+    if (!b.is_duplicate && b.billing_date.slice(0, 10) <= pointAsOf) billedByAsOf.add(b.shipment_id)
+  }
+  const unbilledShipments = pkgs(
+    billable.filter((s) => s.ship_date <= pointAsOf && !billedByAsOf.has(s.shipment_id)),
+  )
   const billedInPeriodPkgs = pkgs(lines)
 
   const discounts = sumMoney(lines.map((l) => l.discounts))
@@ -158,12 +166,19 @@ export function computeLifecycleStages(
   }
 
   const nodes: LifecycleNode[] = [
-    node('contract', 'Contract', 'Active agreements', 'Active contracts (TCV ≠ revenue)', activeContracts.length, 'count'),
-    node('shipment', 'Shipment', 'Physical volume', 'Packages shipped (ship_date)', pkgs(shipments), 'count'),
+    node(
+      'contract',
+      'Contract',
+      'Activity-period agreements',
+      `Contracts · ${contractedCustomers.size} customers`,
+      periodContracts.length,
+      'count',
+    ),
+    node('shipment', 'Shipment', 'Physical volume', 'Packages shipped', pkgs(shipments), 'count'),
     node('rating', 'Rating', 'Rate-card charges', 'Gross rated charges', m.grossBillings, 'money'),
-    node('billing', 'Billing', 'Net commercial bill', 'Net Billing', m.netBilledRevenue, 'money'),
-    node('recognition', 'Recognition', 'Booked revenue', 'Recognized Revenue', recognized, 'money'),
-    node('collection', 'Collection', 'Cash application', 'Cash collected (payment_date)', m.cashCollections, 'money'),
+    node('billing', 'Billing', 'Net commercial bill', 'Net billing', m.netBilledRevenue, 'money'),
+    node('recognition', 'Recognition', 'Booked revenue', 'Recognized revenue', recognized, 'money'),
+    node('collection', 'Collection', 'Cash application', 'Cash collected', m.cashCollections, 'money'),
   ]
 
   const unbilledShare = pct(unbilledShipments, pkgs(billable))
@@ -187,18 +202,18 @@ export function computeLifecycleStages(
     },
     {
       id: 'gap_rating_billing',
-      label: 'Billing accuracy',
+      label: 'Line accuracy',
       value: m.billingAccuracy,
       unit: 'percent',
       tone:
         m.billingAccuracy == null
           ? 'neutral'
           : m.billingAccuracy >= 98
-            ? 'ok'
+            ? 'neutral'
             : m.billingAccuracy >= 95
               ? 'watch'
               : 'alert',
-      title: 'Billed / billable shipments; discounts, credits and rating exceptions explain Rated → Net',
+      title: 'Billing line accuracy (package-weighted) — not a cash or recognition rate',
     },
     {
       id: 'gap_billing_recognition',
@@ -222,13 +237,19 @@ export function computeLifecycleStages(
     contract: {
       id: 'contract',
       title: 'Contract',
-      question: 'How much contracted business is active?',
-      source: 'dim_contract (status = Active)',
-      logic: 'COUNT(contracts WHERE status = Active); Bookings TCV = Σ contract value over term',
-      caveat: 'Bookings TCV is multi-period contract value — never current-period revenue.',
+      question: 'How many contracts / customers cover the activity period?',
+      source: 'dim_contract overlapping activity window',
+      logic: `COUNT(contracts overlapping ${filters.startPeriod}→${filters.endPeriod}); customers deduped separately`,
+      caveat:
+        'Contract count ≠ eligible customer count. Bookings TCV is multi-period — never current-period revenue. Not a conversion into packages.',
       kpis: [
-        { label: 'Active contracts', value: activeContracts.length, unit: 'count' },
-        { label: 'Contracted customers', value: contractedCustomers.size, unit: 'count' },
+        {
+          label: 'Contracts (period overlap)',
+          value: periodContracts.length,
+          unit: 'count',
+          note: `${winStart}–${winEnd}`,
+        },
+        { label: 'Eligible customers (deduped)', value: contractedCustomers.size, unit: 'count' },
         { label: 'Bookings TCV', value: m.bookingsTcv, unit: 'money', note: '≠ revenue' },
         { label: 'Weighted pipeline', value: m.weightedPipeline, unit: 'money', note: 'Not booked' },
       ],
@@ -328,29 +349,31 @@ export function computeLifecycleStages(
     },
     gap_shipment_rating: {
       id: 'gap_shipment_rating',
-      title: 'Shipment → Billing',
-      question: 'Which billable shipments never reached a bill?',
-      source: 'fact_shipment (billable) anti-join fact_billing_line',
-      logic: 'Unbilled = billable shipments with no non-duplicate billing line in any period',
-      caveat: 'Cross-period billing is a timing difference and is excluded from Unbilled.',
+      title: 'Unbilled billable packages',
+      question: 'Which billable shipments have no bill as of the snapshot date?',
+      source: 'fact_shipment (billable) anti-join fact_billing_line (billing_date ≤ as-of)',
+      logic: `Unbilled = billable lots with ship_date ≤ ${pointAsOf} and no non-duplicate line with billing_date ≤ ${pointAsOf}`,
+      caveat:
+        'As-of unbilled ≠ “still open at period end historically” unless as-of equals that period end. Days since shipment ≠ Overdue without a bill-by SLA.',
       kpis: [
-        { label: 'Billable packages', value: pkgs(billable), unit: 'count' },
-        { label: 'Unbilled packages', value: unbilledShipments, unit: 'count' },
+        { label: 'Billable packages in scope', value: pkgs(billable), unit: 'count' },
+        { label: 'Unbilled packages (as-of)', value: unbilledShipments, unit: 'count' },
         { label: 'Unbilled share', value: unbilledShare, unit: 'percent' },
-        { label: 'Unbilled exposure', value: m.unbilledExposure, unit: 'money', note: 'From exceptions' },
+        { label: 'Unbilled exposure (exceptions)', value: m.unbilledExposure, unit: 'money', note: 'Open cases $' },
       ],
       exceptionTypes: ['Missing Billing', 'Unbilled Packages', 'Rate Mismatch', 'Missing Surcharge'],
       trendKeys: ['shipments', 'billable'],
     },
     gap_rating_billing: {
       id: 'gap_rating_billing',
-      title: 'Rating → Billing',
-      question: 'How accurate is billing, and what reduces rated charges?',
-      source: 'fact_billing_line',
-      logic: 'Billing accuracy = billed ÷ billable; Rated − Net = discounts + credits',
-      caveat: 'Contractual discounts and credits are adjustments, not leakage.',
+      title: 'Billing line accuracy',
+      question: 'How accurate are billable packages vs clean billing lines?',
+      source: 'computeBillingIntegrity',
+      logic:
+        'Billing line accuracy = correctly billed packages ÷ eligible billable packages (exact-once, no rating defect)',
+      caveat: 'Not cash collection rate and not revenue realization. Discounts/credits are commercial adjustments.',
       kpis: [
-        { label: 'Billing accuracy', value: m.billingAccuracy, unit: 'percent' },
+        { label: 'Billing line accuracy', value: m.billingAccuracy, unit: 'percent' },
         { label: 'Discounts', value: discounts, unit: 'money' },
         { label: 'Credits', value: credits, unit: 'money' },
         { label: 'Open recoverable leakage', value: m.openRecoverableLeakage, unit: 'money', note: 'Unconfirmed' },
@@ -409,7 +432,10 @@ function lifecycleMonthly(data: DataStore, filters: GlobalFilters): LifecycleMon
     cur.shipments += s.package_count
     if (s.billable) cur.billable += s.package_count
   }
-  for (const l of filterBillingLines(data, filters)) get(l.accounting_period).netBilling += l.net_amount
+  for (const l of filterBillingLines(data, filters)) {
+    const bp = (l.billing_date || `${l.accounting_period}-15`).slice(0, 7)
+    get(bp).netBilling += l.net_amount
+  }
   for (const r of computeRecognizedRevenue(data, filters).rows) get(r.accounting_period).recognized += r.amount
   const payments = rowsInPeriodRange(data.payments, filters.startPeriod, filters.endPeriod, (p) =>
     p.payment_date.slice(0, 7),

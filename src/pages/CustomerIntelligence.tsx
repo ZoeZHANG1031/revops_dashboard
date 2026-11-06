@@ -289,8 +289,8 @@ export function CustomerIntelligence() {
         <FilterablePortfolioStat
           label="Revenue from At-Risk Customers"
           value={formatCurrency(portfolioKpis.revenueFromAtRisk, true)}
-          hint="Current-period revenue in at-risk bands — not Scenario RaR"
-          tip="NOT equal to Scenario RaR — this is current revenue of at-risk accounts"
+          hint="Current-period revenue in at-risk bands — not Scenario Revenue Exposure"
+          tip="NOT equal to Scenario Revenue Exposure — this is current revenue of at-risk accounts"
           active={portfolioFilter === 'atRisk'}
           onClick={() => setPortfolioFilter(portfolioFilter === 'atRisk' ? null : 'atRisk')}
           tone={portfolioKpis.revenueFromAtRisk > 0 ? 'warn' : 'good'}
@@ -495,7 +495,7 @@ export function CustomerIntelligence() {
           title="Revenue at Risk by Health Band"
           insight={rarInsight}
           businessQuestion="Where is forward revenue exposed, and how concentrated is it?"
-          subtitle="Scenario RaR (assumed loss × expected revenue) — not booked loss"
+          subtitle="Scenario Revenue Exposure (band stress factor × forecast revenue) — not booked loss"
         >
           <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
@@ -506,7 +506,7 @@ export function CustomerIntelligence() {
                 <Tooltip
                   formatter={(v, _n, item) => {
                     const p = item?.payload as { customers?: number; revenue?: number } | undefined
-                    return [`${formatCurrencyPrecise(Number(v))} · ${p?.customers ?? 0} customers · rev ${formatCurrency(p?.revenue ?? 0, true)}`, 'Scenario RaR']
+                    return [`${formatCurrencyPrecise(Number(v))} · ${p?.customers ?? 0} customers · rev ${formatCurrency(p?.revenue ?? 0, true)}`, 'Scenario Revenue Exposure']
                   }}
                 />
                 <Bar isAnimationActive={false} dataKey="rar" radius={[0, 4, 4, 0]}>
@@ -518,7 +518,7 @@ export function CustomerIntelligence() {
             </ResponsiveContainer>
           </div>
         </ChartCard>
-        <ChartCard icon="risk" iconTone="customer" title="Top Revenue at Risk" subtitle="Scenario assumed loss — not booked">
+        <ChartCard icon="risk" iconTone="customer" title="Top Revenue at Risk" subtitle="Scenario stress factor — not booked">
           <div className="h-52">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart
@@ -738,7 +738,7 @@ export function CustomerIntelligence() {
                 </p>
                 <p className="mt-1 text-xs text-ink-muted">
                   Bands: ≥85 Healthy · ≥70 Watchlist · ≥50 At Risk · &lt;50 Critical. Component score &lt;50–55 flags a driver.
-                  Assumed loss {formatPercent(selected.assumedLossProbability * 100)} (scenario, not a churn model).
+                  Stress factor {formatPercent(selected.assumedLossProbability * 100)} (scenario, not a churn model).
                 </p>
                 <dl className="mt-2 grid grid-cols-3 gap-1 text-xs">
                   <div className="rounded bg-[#f5f8f5] px-1.5 py-1">
@@ -833,7 +833,7 @@ const PORTFOLIO_FILTER_LABELS: Record<Exclude<PortfolioFilter, null>, string> = 
 
 const EXPOSURE_LABELS: Record<ExposureAxis, string> = {
   currentRevenue: 'Current revenue',
-  scenarioRaR: 'Scenario RaR',
+  scenarioRaR: 'Scenario Revenue Exposure',
   recoverableBilling: 'Recoverable billing',
   contributionAtRisk: 'Contribution at risk',
 }
@@ -930,7 +930,7 @@ function columnsForView(view: ColumnView): ScoreCol[] {
       { key: 'risk', header: 'Risk Types', render: (r) => <RiskChips types={r.riskTypes} /> },
       {
         key: 'rar',
-        header: 'Scenario RaR',
+        header: 'Scenario Revenue Exposure',
         align: 'right',
         render: (r) => formatCurrency(r.scenarioRevenueAtRisk, true),
         sortValue: (r) => r.scenarioRevenueAtRisk,
@@ -1092,7 +1092,7 @@ function columnsForView(view: ColumnView): ScoreCol[] {
       { key: 'risk', header: 'Risk Types', render: (r) => <RiskChips types={r.riskTypes} /> },
       {
         key: 'rar',
-        header: 'Scenario RaR',
+        header: 'Scenario Revenue Exposure',
         align: 'right',
         render: (r) => formatCurrency(r.scenarioRevenueAtRisk, true),
         sortValue: (r) => r.scenarioRevenueAtRisk,

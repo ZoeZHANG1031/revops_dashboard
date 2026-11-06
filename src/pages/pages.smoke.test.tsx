@@ -69,9 +69,9 @@ describe('page render smoke', { timeout: 120000 }, () => {
   it.each([
     ['/company', 'How the Business Works'],
     ['/executive', 'Action Priority'],
-    ['/pipeline', 'Commercial Pipeline · Lead → Closed Won'],
+    ['/pipeline', 'Open Pipeline by Stage'],
     ['/lifecycle', 'Operational Revenue Lifecycle'],
-    ['/reconciliation', 'Reconciliation Status'],
+    ['/reconciliation', 'Reconciliation Bridge'],
     ['/collections', 'AR Aging'],
     ['/forecasting', 'Revenue Forecast Trend'],
     ['/forecasting/scenarios', 'Scenario Drivers'],
@@ -102,7 +102,7 @@ describe('page render smoke', { timeout: 120000 }, () => {
 
   it('lifecycle stage click opens detail panel; gap click switches it', () => {
     renderAt('/lifecycle')
-    fireEvent.click(screen.getAllByText(/^5\. Recognition$/)[0])
+    fireEvent.click(screen.getAllByText(/^Recognition$/)[0])
     expect(screen.getByText('Stage detail')).toBeTruthy()
     fireEvent.click(screen.getByText('Overdue AR', { selector: 'span' }))
     expect(screen.getByText('Recognition → Collection')).toBeTruthy()

@@ -51,7 +51,7 @@ export function CustomerRiskRetention() {
 
       <p className="rounded-lg border border-[#dce6df] bg-[#f7faf8] px-3 py-2 text-xs text-ink-muted">
         Health Score is a weighted rule model (see Customer 360 breakdown). It is <strong>not</strong> a
-        validated ML churn probability. Scenario Revenue at Risk is exposure under assumed loss — not booked
+        validated ML churn probability. Scenario Revenue at Risk is exposure under a band stress factor — not booked
         loss.
       </p>
 
@@ -97,7 +97,7 @@ export function CustomerRiskRetention() {
             },
             {
               key: 'rar',
-              header: 'Scenario RaR',
+              header: 'Scenario Revenue Exposure',
               align: 'right',
               render: (r) => formatCurrency(r.scenarioRevenueAtRisk, true),
               sortValue: (r) => r.scenarioRevenueAtRisk,

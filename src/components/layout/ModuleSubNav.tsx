@@ -6,7 +6,7 @@ export function ModuleSubNav({ items }: { items: NavItem[] }) {
 
   return (
     <nav
-      className="flex flex-wrap gap-1 rounded-lg border border-[#dce6df] bg-[#f7faf8] p-1"
+      className="flex flex-wrap gap-1 rounded-lg border border-[#dce6df] bg-[#f7faf8] p-1 lg:hidden"
       aria-label="Module sections"
     >
       {items.map(({ path, label, icon: Icon }) => (

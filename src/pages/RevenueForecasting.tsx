@@ -41,6 +41,8 @@ import { FORECASTING_NAV, PALETTE } from '@/lib/icons'
 import { computeVarianceBridge } from '@/calc/varianceBridge'
 import { forecastCommissionExpense } from '@/calc/salesCompensation'
 import { FloatingWaterfall } from '@/components/charts/FloatingWaterfall'
+import { BridgeAttribution } from '@/components/charts/BridgeAttribution'
+import { summarizeSteps } from '@/lib/waterfall'
 import { StatTile } from '@/components/common/StatTile'
 import { ChartCard } from '@/components/common/ChartCard'
 import { Collapsible } from '@/components/common/Collapsible'
@@ -838,7 +840,7 @@ export function RevenueForecasting({ focus = 'outlook' }: { focus?: ForecastFocu
                 tip={`After current Pipeline ${formatCurrency(overview.pipelineForecast, true)}`}
               />
               <Mini
-                label="Scenario RaR (protect)"
+                label="Scenario Revenue Exposure (protect)"
                 value={formatCurrency(overview.scenarioRevenueAtRisk, true)}
                 tip="Preventing RaR keeps the gap from widening — Hypothesis"
               />
@@ -872,7 +874,7 @@ export function RevenueForecasting({ focus = 'outlook' }: { focus?: ForecastFocu
                   Churn / RaR that may widen gap (Hypothesis)
                 </p>
                 {gapClosure.churnRiskWideners.length === 0 ? (
-                  <p className="text-xs text-ink-muted">No Scenario RaR rows in scope.</p>
+                  <p className="text-xs text-ink-muted">No Scenario Revenue Exposure rows in scope.</p>
                 ) : (
                   <ul className="space-y-1 text-xs text-ink">
                     {gapClosure.churnRiskWideners.map((c) => (
@@ -971,7 +973,7 @@ export function RevenueForecasting({ focus = 'outlook' }: { focus?: ForecastFocu
             tip={overview.compositionOk ? 'Composition reconciles within $0.05' : 'Composition mismatch — review driver forecast'}
           />
         </div>
-        <FloatingWaterfall steps={compositionSteps} height={220} totalKeys={['total']} />
+        <FloatingWaterfall steps={compositionSteps} height={220} totalKeys={['existing', 'total']} />
         {overview.pipelineForecast === 0 && (
           <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-950">
             New Pipeline Forecast is $0 for the forward horizon. Confirm pipeline activations overlap{' '}
@@ -1460,27 +1462,21 @@ export function RevenueForecasting({ focus = 'outlook' }: { focus?: ForecastFocu
               <p className="rounded-lg border border-dashed border-slate-200 px-3 py-10 text-center text-xs text-ink-muted">{fcScope.reason}</p>
             ) : (
               <>
-                {(() => {
-                  const other = bridge.items.find((i) => i.key === 'other')?.amount ?? 0
-                  const comps = bridge.items.filter((i) => i.key !== 'forecast' && i.key !== 'actual')
-                  const known = comps.filter((i) => i.key !== 'other').reduce((a, i) => a + i.amount, 0)
-                  const absAll = comps.reduce((a, i) => a + Math.abs(i.amount), 0)
-                  const quality = absAll === 0 ? null : 100 - (Math.abs(other) / absAll) * 100
-                  return (
-                    <div className="mb-2 grid gap-2 text-[13px] sm:grid-cols-4">
-                      <Mini label="Unexplained residual" value={formatCurrencyPrecise(other)} warn={quality != null && quality < 70} />
-                      <Mini label="Residual ÷ forecast" value={formatPercent(bridge.forecast === 0 ? null : (other / Math.abs(bridge.forecast)) * 100)} />
-                      <Mini label="Known driver contribution" value={formatCurrencyPrecise(known)} />
-                      <Mini
-                        label="Attribution quality"
-                        value={quality == null ? 'N/A' : formatPercent(quality)}
-                        tip="100 − |residual| ÷ Σ|components|. Measures how well drivers explain the gap — separate from forecast accuracy."
-                        warn={quality != null && quality < 70}
-                      />
-                    </div>
-                  )
-                })()}
-                <FloatingWaterfall steps={bridge.items.map((i) => (i.key === 'other' ? { ...i, label: 'Unexplained Residual' } : i))} height={260} />
+                <BridgeAttribution
+                  summary={summarizeSteps(bridge.items, ['forecast', 'actual'])}
+                  forecastBase={bridge.forecast}
+                  note={bridge.attributionNote}
+                />
+                <FloatingWaterfall
+                  steps={bridge.items.map((i) =>
+                    i.key === 'other'
+                      ? { ...i, label: 'Unexplained Residual', shortLabel: 'Residual' }
+                      : i,
+                  )}
+                  height={260}
+                  totalKeys={['forecast', 'actual']}
+                  summaryMode="footing"
+                />
                 <div className="mt-2 flex flex-wrap items-center gap-2 text-[13px]">
                   <span className="text-ink-muted">Investigate by:</span>
                   {(['customer', 'month'] as const).map((d) => (
