@@ -1,14 +1,12 @@
 import { filterExceptions } from '@/lib/filters'
 import { money, sumMoney } from '@/lib/money'
 import type { DataStore, FactException, GlobalFilters } from '@/types'
+import { EXCEPTION_REGISTRY, isOpenException, type ExposureClass } from './exceptionRegistry'
 import { computeCustomerHealth } from './customerHealth'
 import { computeUnitEconomics } from './unitEconomics'
 
-export type ActionCategory =
-  | 'Potential Revenue Recovery'
-  | 'Revenue at Risk'
-  | 'Overdue Receivables'
-  | 'Margin Deterioration'
+/** Exposure classes from the Exception Registry — never summed into one "revenue loss" */
+export type ActionCategory = ExposureClass
 
 export interface ActionItem {
   id: string
@@ -23,16 +21,48 @@ export interface ActionItem {
   rootCause: string
   recommendedAction: string
   customerId: string | null
+  /** 1–3: open/investigating & owner-actionable = 3 */
   actionability: number
+  /** 1–3 from severity (Critical/High = 3, Medium = 2, Low = 1) */
+  urgency?: number
+  /** Evidence strength: rule-engine exception with expected/actual = High; trend signal = Medium; derived / scenario = Low */
+  confidence?: 'High' | 'Medium' | 'Low'
+  /** 1–3 impact tertile within the current list */
+  impactScore?: number
+  /** urgency + confidence + actionability + impactScore (4–12) */
+  priorityScore?: number
   sourceException?: FactException
 }
 
-const RECOVERY_TYPES = new Set([
-  'Missing Billing',
-  'Duplicate Billing',
-  'Rate Mismatch',
-  'Missing Surcharge',
-  'Unbilled Packages',
+export const ACTION_PRIORITY_RULE =
+  'Priority = Impact tertile (1–3) + Urgency from severity (1–3) + Confidence of evidence (1–3) + Actionability (1–3); ties by $ impact.'
+
+const CONFIDENCE_SCORE = { High: 3, Medium: 2, Low: 1 } as const
+
+function urgencyFromSeverity(sev: string): number {
+  if (sev === 'Critical' || sev === 'High') return 3
+  if (sev === 'Medium') return 2
+  return 1
+}
+
+function confidenceFor(item: ActionItem): 'High' | 'Medium' | 'Low' {
+  if (!item.sourceException) return 'Low' // derived (unit-economics paradox) or health-score scenario
+  if (
+    item.category === 'Recoverable Billing Exposure' ||
+    item.category === 'Billing Correction' ||
+    item.category === 'Collections Exposure'
+  )
+    return 'High'
+  return 'Medium'
+}
+
+/** Exposure classes that produce actions (timing/adjustment and data quality are handled in Reconciliation) */
+const ACTION_CLASSES = new Set<ExposureClass>([
+  'Recoverable Billing Exposure',
+  'Billing Correction',
+  'Collections Exposure',
+  'Customer Revenue Risk',
+  'Margin Pressure',
 ])
 
 export function buildActionCenter(data: DataStore, filters: GlobalFilters): ActionItem[] {
@@ -40,74 +70,28 @@ export function buildActionCenter(data: DataStore, filters: GlobalFilters): Acti
   const exceptions = filterExceptions(data, filters)
 
   exceptions.forEach((e) => {
-    if (RECOVERY_TYPES.has(e.exception_type)) {
-      items.push({
-        id: e.exception_id,
-        category: 'Potential Revenue Recovery',
-        title: e.exception_type,
-        financialImpact: e.financial_impact,
-        isBookedLoss: false,
-        severity: e.severity,
-        owner: e.owner,
-        status: e.status,
-        rootCause: e.root_cause,
-        recommendedAction: e.recommended_action,
-        customerId: e.customer_id,
-        actionability: e.status === 'Open' || e.status === 'Investigating' ? 3 : 1,
-        sourceException: e,
-      })
-    } else if (e.exception_type === 'Overdue AR') {
-      items.push({
-        id: e.exception_id,
-        category: 'Overdue Receivables',
-        title: `Overdue invoice ${e.invoice_id ?? ''}`.trim(),
-        financialImpact: e.financial_impact,
-        isBookedLoss: false,
-        severity: e.severity,
-        owner: e.owner,
-        status: e.status,
-        rootCause: `${e.root_cause} — AR aging is a cash/liquidity issue, not a reduction to recognized revenue.`,
-        recommendedAction: e.recommended_action,
-        customerId: e.customer_id,
-        actionability: 2,
-        sourceException: e,
-      })
-    } else if (
-      e.exception_type === 'High Risk Customer' ||
-      e.exception_type === 'Volume Decline'
-    ) {
-      items.push({
-        id: e.exception_id,
-        category: 'Revenue at Risk',
-        title: e.exception_type,
-        financialImpact: e.financial_impact,
-        isBookedLoss: false,
-        severity: e.severity,
-        owner: e.owner,
-        status: e.status,
-        rootCause: e.root_cause,
-        recommendedAction: e.recommended_action,
-        customerId: e.customer_id,
-        actionability: 2,
-        sourceException: e,
-      })
-    } else if (e.exception_type === 'Margin Decline') {
-      items.push({
-        id: e.exception_id,
-        category: 'Margin Deterioration',
-        title: e.exception_type,
-        financialImpact: e.financial_impact,
-        isBookedLoss: false,
-        severity: e.severity,
-        owner: e.owner,
-        status: e.status,
-        rootCause: e.root_cause,
-        recommendedAction: e.recommended_action,
-        customerId: e.customer_id,
-        actionability: 2,
-        sourceException: e,
-      })
-    }
+    const def = EXCEPTION_REGISTRY[e.exception_type]
+    // Only open / investigating / pending items need action — keeps exposure totals equal to Reconciliation
+    if (!def || !ACTION_CLASSES.has(def.exposureClass) || !isOpenException(e)) return
+    const cls = def.exposureClass
+    items.push({
+      id: e.exception_id,
+      category: cls,
+      title: cls === 'Collections Exposure' ? `Overdue invoice ${e.invoice_id ?? ''}`.trim() : e.exception_type,
+      financialImpact: e.financial_impact,
+      isBookedLoss: false,
+      severity: e.severity,
+      owner: e.owner,
+      status: e.status,
+      rootCause:
+        cls === 'Collections Exposure'
+          ? `${e.root_cause} — AR aging is a cash/liquidity issue, not a reduction to recognized revenue.`
+          : e.root_cause,
+      recommendedAction: e.recommended_action,
+      customerId: e.customer_id,
+      actionability: def.recoverable ? 3 : 2,
+      sourceException: e,
+    })
   })
 
   // Derived margin deterioration from unit economics (early→late)
@@ -120,7 +104,7 @@ export function buildActionCenter(data: DataStore, filters: GlobalFilters): Acti
   ) {
     items.push({
       id: 'DERIVED-MARGIN-PARADOX',
-      category: 'Margin Deterioration',
+      category: 'Margin Pressure',
       title: 'Volume up / contribution down',
       financialImpact: money(
         Math.abs(
@@ -144,10 +128,10 @@ export function buildActionCenter(data: DataStore, filters: GlobalFilters): Acti
     .filter((h) => h.healthScore < 45)
     .slice(0, 5)
     .forEach((h) => {
-      if (items.some((i) => i.customerId === h.customerId && i.category === 'Revenue at Risk')) return
+      if (items.some((i) => i.customerId === h.customerId && i.category === 'Customer Revenue Risk')) return
       items.push({
         id: `RAR-${h.customerId}`,
-        category: 'Revenue at Risk',
+        category: 'Customer Revenue Risk',
         title: `${h.customerName} health ${h.healthScore}`,
         financialImpact: h.revenueAtRisk,
         isBookedLoss: false,
@@ -161,30 +145,86 @@ export function buildActionCenter(data: DataStore, filters: GlobalFilters): Acti
       })
     })
 
-  return items.sort((a, b) => {
-    const score = (x: ActionItem) => x.actionability * 1e9 + x.financialImpact
-    return score(b) - score(a)
+  const impacts = items.map((i) => i.financialImpact).sort((a, b) => a - b)
+  const q = (p: number) => impacts[Math.min(impacts.length - 1, Math.floor(p * impacts.length))] ?? 0
+  const t1 = q(1 / 3)
+  const t2 = q(2 / 3)
+  items.forEach((i) => {
+    i.urgency = urgencyFromSeverity(i.severity)
+    i.confidence = confidenceFor(i)
+    i.impactScore = i.financialImpact >= t2 ? 3 : i.financialImpact >= t1 ? 2 : 1
+    i.priorityScore = i.impactScore + i.urgency + CONFIDENCE_SCORE[i.confidence] + i.actionability
   })
+
+  return items.sort(
+    (a, b) => (b.priorityScore ?? 0) - (a.priorityScore ?? 0) || b.financialImpact - a.financialImpact,
+  )
 }
 
+export interface ActionGroup {
+  key: string
+  category: ActionCategory
+  rootCause: string
+  items: ActionItem[]
+  cases: number
+  impact: number
+  urgency: number
+  confidence: 'High' | 'Medium' | 'Low'
+  priorityScore: number
+  owner: string
+  recommendedAction: string
+}
+
+/** Aggregate actions by exposure class × root-cause type (default Executive view) */
+export function groupActionsByRootCause(items: ActionItem[]): ActionGroup[] {
+  const map = new Map<string, ActionItem[]>()
+  for (const i of items) {
+    const rc = i.sourceException?.exception_type ?? i.title
+    const key = `${i.category}|${i.category === 'Customer Revenue Risk' && !i.sourceException ? 'Low health score' : rc}`
+    const list = map.get(key) ?? []
+    list.push(i)
+    map.set(key, list)
+  }
+  const confRank = { High: 3, Medium: 2, Low: 1 } as const
+  return [...map.entries()]
+    .map(([key, list]) => {
+      const sorted = [...list].sort((a, b) => (b.priorityScore ?? 0) - (a.priorityScore ?? 0))
+      const owners = new Map<string, number>()
+      list.forEach((i) => owners.set(i.owner, (owners.get(i.owner) ?? 0) + i.financialImpact))
+      const owner = [...owners.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? '—'
+      const minConf = list.reduce<'High' | 'Medium' | 'Low'>(
+        (acc, i) => (confRank[i.confidence ?? 'Low'] < confRank[acc] ? (i.confidence ?? 'Low') : acc),
+        'High',
+      )
+      return {
+        key,
+        category: list[0].category,
+        rootCause: key.split('|')[1],
+        items: sorted,
+        cases: list.length,
+        impact: sumMoney(list.map((i) => i.financialImpact)),
+        urgency: Math.max(...list.map((i) => i.urgency ?? 1)),
+        confidence: minConf,
+        priorityScore: Math.max(...list.map((i) => i.priorityScore ?? 0)),
+        owner,
+        recommendedAction: sorted[0]?.recommendedAction ?? '—',
+      }
+    })
+    .sort((a, b) => b.priorityScore - a.priorityScore || b.impact - a.impact)
+}
+
+/** Totals per exposure class — shown side by side, never added together */
 export function actionCategoryTotals(items: ActionItem[]) {
   const cats: ActionCategory[] = [
-    'Potential Revenue Recovery',
-    'Revenue at Risk',
-    'Overdue Receivables',
-    'Margin Deterioration',
+    'Recoverable Billing Exposure',
+    'Collections Exposure',
+    'Customer Revenue Risk',
+    'Billing Correction',
+    'Margin Pressure',
   ]
   return cats.map((category) => ({
     category,
     count: items.filter((i) => i.category === category).length,
     impact: sumMoney(items.filter((i) => i.category === category).map((i) => i.financialImpact)),
-    note:
-      category === 'Overdue Receivables'
-        ? 'Cash/collections exposure — not recognized revenue loss'
-        : category === 'Potential Revenue Recovery'
-          ? 'Actionable billing leakage / adjustment pool'
-          : category === 'Revenue at Risk'
-            ? 'Forward scenario exposure — not booked'
-            : 'Profitability pressure vs prior half-window',
   }))
 }

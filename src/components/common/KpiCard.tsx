@@ -12,6 +12,7 @@ import {
 } from '@/lib/semantics'
 import { formatCurrency, formatPercent } from '@/lib/money'
 import { KpiDefinitionPanel } from './KpiDefinitionPanel'
+import { Sparkline } from './Sparkline'
 import type { KpiDefinition } from '@/types'
 
 export interface KpiAction {
@@ -22,23 +23,31 @@ export interface KpiAction {
 interface KpiCardProps {
   kpiId: string
   value: number
+  /** Percent change vs prior comparable window (already ×100 scale for formatPercent) */
   priorDelta?: number | null
+  /** Absolute change vs named baseline (same units as value) */
+  absoluteChange?: number | null
+  /** Named comparison baseline, e.g. "vs Existing Customer Forecast" */
+  baselineLabel?: string
   target?: number | null
   format?: 'currency' | 'percent' | 'number'
   onClick?: () => void
   actions?: KpiAction[]
   size?: 'primary' | 'secondary'
   polarity?: KpiPolarity
-  /** Optional absolute-level thresholds for lower/higher-better KPIs */
   levelThresholds?: { good: number; warn: number }
   scopeNote?: string
   dateBasisNote?: string
+  statusLabel?: string
+  sparkline?: number[] | null
 }
 
 export function KpiCard({
   kpiId,
   value,
   priorDelta,
+  absoluteChange,
+  baselineLabel,
   target,
   format = 'currency',
   onClick,
@@ -48,6 +57,8 @@ export function KpiCard({
   levelThresholds,
   scopeNote,
   dateBasisNote,
+  statusLabel,
+  sparkline,
 }: KpiCardProps) {
   const [open, setOpen] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -74,11 +85,11 @@ export function KpiCard({
     kpiId.includes('leakage')
       ? 'lower_better'
       : 'higher_better')
-  const deltaTone = interpretDelta(priorDelta, pol)
+  const deltaTone = interpretDelta(priorDelta ?? (absoluteChange != null ? absoluteChange : null), pol)
   const levelTone = levelThresholds
     ? interpretLevel(value, levelThresholds, pol)
     : deltaTone === 'neutral' && pol !== 'neutral'
-      ? interpretDelta(priorDelta ?? 0, pol)
+      ? interpretDelta(priorDelta ?? absoluteChange ?? 0, pol)
       : deltaTone
 
   const display =
@@ -87,6 +98,15 @@ export function KpiCard({
       : format === 'percent'
         ? formatPercent(value)
         : value.toLocaleString()
+
+  const absDisplay =
+    absoluteChange == null
+      ? null
+      : format === 'currency'
+        ? `${absoluteChange >= 0 ? '+' : ''}${formatCurrency(absoluteChange, true)}`
+        : format === 'percent'
+          ? `${absoluteChange >= 0 ? '+' : ''}${absoluteChange.toFixed(1)} pts`
+          : `${absoluteChange >= 0 ? '+' : ''}${absoluteChange.toLocaleString()}`
 
   const clickable = Boolean(onClick || (actions && actions.length > 0))
 
@@ -100,65 +120,75 @@ export function KpiCard({
 
   return (
     <div
-      className={`relative card-surface border-l-4 p-4 ${toneBorderClass(levelTone)} ${
-        clickable ? 'cursor-pointer hover:border-brand-300 transition-colors' : ''
-      } ${size === 'primary' ? 'min-h-[120px]' : ''}`}
+      className={`relative card-surface border-l-4 ${size === 'primary' ? 'card-raised p-5' : 'p-4'} ${toneBorderClass(levelTone)} ${
+        clickable ? 'cursor-pointer transition-colors hover:border-brand-300' : ''
+      }`}
       onClick={handleCardClick}
       role={clickable ? 'button' : undefined}
       title={clickable ? 'Click for breakdown / lineage / investigate' : undefined}
     >
       <div className="flex items-start justify-between gap-2">
-        <div>
-          <p className="text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
+        <div className="min-w-0 flex-1">
+          <p className="t-kpi-label uppercase text-ink-muted">
             {def?.name ?? kpiId}
           </p>
-          <p
-            className={`mt-1 font-mono font-semibold text-ink ${size === 'primary' ? 'text-3xl' : 'text-xl'}`}
-          >
+          <p className={`mt-1.5 font-mono text-ink ${size === 'primary' ? 't-kpi' : 'text-[24px] font-bold tracking-tight'}`}>
             {display}
           </p>
         </div>
-        <div className="flex items-center gap-0.5">
-          {actions && actions.length > 0 && (
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          <div className="flex items-center gap-0.5">
+            {actions && actions.length > 0 && (
+              <button
+                type="button"
+                className="rounded-md p-1 text-slate-400 hover:bg-brand-50 hover:text-brand-700"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setMenuOpen((v) => !v)
+                }}
+                aria-label="KPI actions"
+              >
+                <MoreHorizontal size={16} />
+              </button>
+            )}
             <button
               type="button"
               className="rounded-md p-1 text-slate-400 hover:bg-brand-50 hover:text-brand-700"
               onClick={(e) => {
                 e.stopPropagation()
-                setMenuOpen((v) => !v)
+                setOpen((v) => !v)
               }}
-              aria-label="KPI actions"
+              aria-label="KPI definition"
             >
-              <MoreHorizontal size={16} />
+              <Info size={16} />
             </button>
+          </div>
+          {sparkline && sparkline.length >= 2 && (
+            <div className="w-16">
+              <Sparkline data={sparkline} />
+            </div>
           )}
-          <button
-            type="button"
-            className="rounded-md p-1 text-slate-400 hover:bg-brand-50 hover:text-brand-700"
-            onClick={(e) => {
-              e.stopPropagation()
-              setOpen((v) => !v)
-            }}
-            aria-label="KPI definition"
-          >
-            <Info size={16} />
-          </button>
         </div>
       </div>
-      <div className="mt-3 flex flex-wrap items-center gap-3 text-xs">
-        {priorDelta != null && (
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-[13px]">
+        {(absoluteChange != null || priorDelta != null) && (
           <span className={`inline-flex items-center gap-1 font-medium ${toneTextClass(deltaTone)}`}>
-            {priorDelta >= 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
-            {format === 'percent' && pol !== 'lower_better'
-              ? `${priorDelta > 0 ? '+' : ''}${priorDelta.toFixed(1)} pts`
-              : formatPercent(priorDelta)}
-            <span className="font-normal text-ink-muted">vs prior</span>
-            {pol === 'lower_better' && priorDelta < 0 && (
-              <span className="text-[10px] text-success">(improvement)</span>
+            {(absoluteChange ?? priorDelta ?? 0) >= 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
+            {absDisplay}
+            {priorDelta != null && (
+              <span>
+                {absDisplay ? ' / ' : ''}
+                {format === 'percent' && pol !== 'lower_better'
+                  ? `${priorDelta > 0 ? '+' : ''}${priorDelta.toFixed(1)} pts`
+                  : formatPercent(priorDelta)}
+              </span>
             )}
-            {pol === 'lower_better' && priorDelta > 0 && (
-              <span className="text-[10px] text-danger">(worsening)</span>
-            )}
+            <span className="font-normal text-ink-muted">{baselineLabel ?? 'vs prior'}</span>
+          </span>
+        )}
+        {statusLabel && (
+          <span className="rounded bg-[#f5f8f5] px-1.5 py-0.5 text-xs font-medium text-ink">
+            {statusLabel}
           </span>
         )}
         {target != null && format === 'currency' && (
@@ -171,10 +201,14 @@ export function KpiCard({
           <span className="text-ink-muted">Target {formatPercent(target)}</span>
         )}
       </div>
-      {(scopeNote || dateBasisNote || registry) && (
-        <p className="mt-2 text-[10px] text-ink-muted">
-          {dateBasisNote ?? (registry ? `Date basis: ${registry.dateBasis}` : null)}
-          {scopeNote ? ` · ${scopeNote}` : ''}
+      {/* Date basis is Level-3 detail: available via the ⓘ definition panel and hover title */}
+      {(scopeNote || dateBasisNote) && (
+        <p
+          className="mt-1.5 text-xs text-ink-muted"
+          title={registry ? `Date basis: ${registry.dateBasis}` : undefined}
+        >
+          {dateBasisNote ? `${dateBasisNote}${scopeNote ? ' · ' : ''}` : ''}
+          {scopeNote ?? ''}
         </p>
       )}
       {menuOpen && actions && actions.length > 0 && (

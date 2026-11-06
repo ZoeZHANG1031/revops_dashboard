@@ -1,4 +1,5 @@
 import { filterRevenue } from '@/lib/filters'
+import { createCalcMemo, filterCacheKey } from '@/lib/memoCalc'
 import { sumMoney } from '@/lib/money'
 import type { DataStore, FactRevenueRecognition, GlobalFilters } from '@/types'
 
@@ -21,8 +22,14 @@ export interface RecognizedRevenueResult {
   rows: FactRevenueRecognition[]
 }
 
+const recognizedMemo = createCalcMemo<RecognizedRevenueResult>(64)
+
 function needsDimensionalAttribution(filters: GlobalFilters): boolean {
-  return filters.regions.length > 0 || filters.serviceTypes.length > 0
+  return (
+    filters.regions.length > 0 ||
+    filters.serviceTypes.length > 0 ||
+    (filters.metros?.length ?? 0) > 0
+  )
 }
 
 /**
@@ -40,6 +47,10 @@ export function computeRecognizedRevenue(
   data: DataStore,
   filters: GlobalFilters,
 ): RecognizedRevenueResult {
+  const key = filterCacheKey(filters)
+  const cached = recognizedMemo.get(data, key)
+  if (cached) return cached
+
   const storeHasRecognition = data.revenueRecognition.length > 0
   const dimensional = needsDimensionalAttribution(filters)
   const filtered = filterRevenue(data, filters)
@@ -57,7 +68,7 @@ export function computeRecognizedRevenue(
   else if (amount === 0) display = 'zero'
   else display = 'value'
 
-  return {
+  return recognizedMemo.set(data, key, {
     amount,
     recordCount: rows.length,
     grain,
@@ -65,7 +76,7 @@ export function computeRecognizedRevenue(
     display,
     note,
     rows,
-  }
+  })
 }
 
 export function formatRecognizedRevenueDisplay(result: RecognizedRevenueResult): {

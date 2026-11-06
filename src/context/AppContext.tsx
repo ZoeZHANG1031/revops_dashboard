@@ -9,8 +9,10 @@ import {
   type ReactNode,
 } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
+import { computeCompanyOverview } from '@/calc/companyOverview'
 import { DEFAULT_SCENARIO_PARAMS } from '@/calc/forecast'
 import { DEFAULT_HEALTH_WEIGHTS, type HealthWeights } from '@/calc/customerHealth'
+import { computeSharedMetrics } from '@/calc/metricRegistry'
 import { getDataStore } from '@/data/generate'
 import {
   buildAnalysisSearch,
@@ -26,6 +28,8 @@ import type {
   ExceptionStatus,
   ForecastScenarioParams,
   GlobalFilters,
+  RegionCode,
+  ServiceType,
 } from '@/types'
 
 export interface OpenEntityState {
@@ -42,11 +46,63 @@ export interface LocalAnalysisFilters {
   costType: string | null
 }
 
+export interface InvestigationStep {
+  id: string
+  label: string
+  path: string
+}
+
+export interface InvestigationState {
+  id: string | null
+  title: string | null
+  sourcePage: string | null
+  steps: InvestigationStep[]
+  stepIndex: number
+  toast: string | null
+}
+
+export interface NavigateExtras {
+  customerId?: string | null
+  region?: string | null
+  metro?: string | null
+  serviceType?: string | null
+  startPeriod?: string | null
+  endPeriod?: string | null
+  exceptionType?: string | null
+  exceptionStatus?: string | null
+  highlightCustomerId?: string | null
+  openEntity?: OpenEntityState | null
+  sourcePage?: string | null
+  investigationId?: string | null
+  investigationTitle?: string | null
+  investigationSteps?: InvestigationStep[]
+  investigationStepIndex?: number
+  toast?: string | null
+  /** Clear only temporary selection objects without wiping global filters */
+  clearDrillContext?: boolean
+}
+
+/** Snapshot of the analysis context before a cross-page jump — restored by navigateBack */
+export interface NavPathEntry {
+  path: string
+  search: string
+  filters: GlobalFilters
+  localFilters: LocalAnalysisFilters
+  highlightCustomerId: string | null
+  scenario: 'Base' | 'Upside' | 'Downside'
+}
+
+const NAV_PATH_LIMIT = 8
+
 interface AppContextValue {
   data: DataStore
   filters: GlobalFilters
   setFilters: (f: GlobalFilters | ((prev: GlobalFilters) => GlobalFilters)) => void
+  /** Clears business filters to defaults; keeps page-local chart UI alone. */
+  clearFilters: () => void
+  /** Alias of clearFilters for legacy callers. */
   resetFilters: () => void
+  /** Clears temporary selection (customer highlight, entity drawer, local exception focus). */
   clearSelection: () => void
   scenario: 'Base' | 'Upside' | 'Downside'
   setScenario: (s: 'Base' | 'Upside' | 'Downside') => void
@@ -71,23 +127,23 @@ interface AppContextValue {
   openEntityDrawer: (state: OpenEntityState) => void
   closeEntity: () => void
   navigateToEntity: (type: EntityType | 'kpi', id: string, label?: string) => void
-  navigateWithContext: (
-    path: string,
-    extras?: {
-      customerId?: string | null
-      region?: string | null
-      serviceType?: string | null
-      startPeriod?: string | null
-      endPeriod?: string | null
-      exceptionType?: string | null
-      exceptionStatus?: string | null
-      highlightCustomerId?: string | null
-      openEntity?: OpenEntityState | null
-    },
-  ) => void
+  navigateWithContext: (path: string, extras?: NavigateExtras) => void
   updateExceptionStatus: (exceptionId: string, status: ExceptionStatus) => void
   analysisTrail: { entityType: EntityType | 'kpi'; entityId: string; label: string }[]
   popAnalysisTrail: () => void
+  investigation: InvestigationState
+  setInvestigation: (s: InvestigationState | ((prev: InvestigationState) => InvestigationState)) => void
+  clearInvestigation: () => void
+  dismissToast: () => void
+  contextFeedback: string | null
+  /** Drill-down path of previous pages (oldest first) */
+  navPath: NavPathEntry[]
+  /** Return to navPath[index], restoring its filters, local filters and selection */
+  navigateBack: (index?: number) => void
+  /** Clears page-local filters (exception type/status, pipeline stage, cost type) only */
+  clearLocalFilters: () => void
+  /** Unified Customer 360 entry — keeps global filters, highlights the customer, records path */
+  openCustomer360: (customerId: string) => void
 }
 
 const AppContext = createContext<AppContextValue | null>(null)
@@ -97,6 +153,15 @@ const DEFAULT_LOCAL: LocalAnalysisFilters = {
   exceptionStatus: null,
   pipelineStage: null,
   costType: null,
+}
+
+const DEFAULT_INVESTIGATION: InvestigationState = {
+  id: null,
+  title: null,
+  sourcePage: null,
+  steps: [],
+  stepIndex: 0,
+  toast: null,
 }
 
 function applyExceptionOverrides(
@@ -143,40 +208,75 @@ export function AppProvider({ children }: { children: ReactNode }) {
     { entityType: EntityType | 'kpi'; entityId: string; label: string }[]
   >([])
   const [exceptionOverrides, setExceptionOverrides] = useState<Record<string, ExceptionStatus>>({})
+  const [investigation, setInvestigationState] = useState<InvestigationState>(DEFAULT_INVESTIGATION)
+  const [contextFeedback, setContextFeedback] = useState<string | null>(null)
+  const [navPath, setNavPath] = useState<NavPathEntry[]>([])
 
   const data = useMemo(
     () => applyExceptionOverrides(baseData, exceptionOverrides),
     [baseData, exceptionOverrides],
   )
 
-  // Bootstrap + hydrate from URL
+  // Bootstrap + hydrate from URL (preserve object identity when values unchanged —
+  // otherwise every navigateWithContext double-triggers heavy page recomputes)
   useEffect(() => {
     const q = parseAnalysisSearch(searchParams.toString())
     syncingFromUrl.current = true
-    setFiltersState((prev) => ({
-      startPeriod: q.filters.startPeriod ?? prev.startPeriod,
-      endPeriod: q.filters.endPeriod ?? prev.endPeriod,
-      customerIds: q.filters.customerIds ?? prev.customerIds,
-      regions: q.filters.regions ?? prev.regions,
-      serviceTypes: q.filters.serviceTypes ?? prev.serviceTypes,
-      snapshot: baseData.meta.snapshot_label,
-    }))
+    setFiltersState((prev) => {
+      const next: GlobalFilters = {
+        startPeriod: q.filters.startPeriod ?? prev.startPeriod,
+        endPeriod: q.filters.endPeriod ?? prev.endPeriod,
+        customerIds: q.filters.customerIds ?? prev.customerIds,
+        regions: q.filters.regions ?? prev.regions,
+        metros: q.filters.metros ?? prev.metros ?? [],
+        serviceTypes: q.filters.serviceTypes ?? prev.serviceTypes,
+        snapshot: baseData.meta.snapshot_label,
+      }
+      if (
+        prev.startPeriod === next.startPeriod &&
+        prev.endPeriod === next.endPeriod &&
+        prev.snapshot === next.snapshot &&
+        prev.customerIds.join('|') === next.customerIds.join('|') &&
+        prev.regions.join('|') === next.regions.join('|') &&
+        (prev.metros ?? []).join('|') === next.metros.join('|') &&
+        prev.serviceTypes.join('|') === next.serviceTypes.join('|')
+      ) {
+        return prev
+      }
+      return next
+    })
     if (q.scenario) {
-      setScenarioState(q.scenario)
+      setScenarioState((prev) => (prev === q.scenario ? prev : q.scenario!))
       setScenarioParams(DEFAULT_SCENARIO_PARAMS[q.scenario])
     }
-    if (q.dateBasis) setDateBasis(q.dateBasis)
+    if (q.dateBasis) setDateBasis((prev) => (prev === q.dateBasis ? prev : q.dateBasis!))
     if (q.focusExceptionType || q.focusExceptionStatus) {
-      setLocalFilters((prev) => ({
-        ...prev,
-        exceptionType: q.focusExceptionType ?? prev.exceptionType,
-        exceptionStatus: q.focusExceptionStatus ?? prev.exceptionStatus,
-      }))
+      setLocalFilters((prev) => {
+        const exceptionType = q.focusExceptionType ?? prev.exceptionType
+        const exceptionStatus = q.focusExceptionStatus ?? prev.exceptionStatus
+        if (exceptionType === prev.exceptionType && exceptionStatus === prev.exceptionStatus) {
+          return prev
+        }
+        return { ...prev, exceptionType, exceptionStatus }
+      })
     }
-    if (q.highlightCustomerId) setHighlightCustomerId(q.highlightCustomerId)
-    if (q.filters.customerIds?.[0]) setHighlightCustomerId(q.filters.customerIds[0])
+    const hl = q.highlightCustomerId ?? q.filters.customerIds?.[0] ?? null
+    if (hl) setHighlightCustomerId((prev) => (prev === hl ? prev : hl))
     if (q.entityType && q.entityId) {
-      setOpenEntity({ entityType: q.entityType, entityId: q.entityId })
+      setOpenEntity((prev) =>
+        prev && prev.entityType === q.entityType && prev.entityId === q.entityId
+          ? prev
+          : { entityType: q.entityType!, entityId: q.entityId! },
+      )
+    }
+    if (q.sourcePage || q.investigationId || q.toast) {
+      setInvestigationState((prev) => ({
+        ...prev,
+        sourcePage: q.sourcePage ?? prev.sourcePage,
+        id: q.investigationId ?? prev.id,
+        toast: q.toast ?? prev.toast,
+      }))
+      if (q.toast) setContextFeedback(decodeURIComponent(q.toast))
     }
     bootstrapped.current = true
     queueMicrotask(() => {
@@ -186,6 +286,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.search])
 
+  // Sync-warm default-scope aggregates so the landing page hits memo on first paint
+  useMemo(() => {
+    computeCompanyOverview(baseData, defaultFilt)
+    computeSharedMetrics(baseData, defaultFilt, 'Base')
+  }, [baseData, defaultFilt])
+
   const writeUrl = useCallback(
     (
       nextFilters: GlobalFilters,
@@ -194,6 +300,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       nextLocal: LocalAnalysisFilters,
       nextHighlight: string | null,
       nextEntity: OpenEntityState | null,
+      inv: InvestigationState = investigation,
       replace = true,
     ) => {
       if (syncingFromUrl.current || !bootstrapped.current) return
@@ -208,26 +315,33 @@ export function AppProvider({ children }: { children: ReactNode }) {
             ? (nextEntity.entityType as EntityType)
             : null,
         entityId: nextEntity && nextEntity.entityType !== 'kpi' ? nextEntity.entityId : null,
+        sourcePage: inv.sourcePage,
+        investigationId: inv.id,
+        toast: inv.toast,
       })
       const current = searchParams.toString()
       if (qs === current) return
       setSearchParams(qs, { replace })
     },
-    [searchParams, setSearchParams],
+    [searchParams, setSearchParams, investigation],
   )
 
   const setFilters = useCallback(
     (f: GlobalFilters | ((prev: GlobalFilters) => GlobalFilters)) => {
       setFiltersState((prev) => {
         const next = typeof f === 'function' ? f(prev) : f
-        writeUrl(next, scenario, dateBasis, localFilters, highlightCustomerId, openEntity)
-        return next
+        const normalized: GlobalFilters = {
+          ...next,
+          metros: next.metros ?? [],
+        }
+        writeUrl(normalized, scenario, dateBasis, localFilters, highlightCustomerId, openEntity)
+        return normalized
       })
     },
     [writeUrl, scenario, dateBasis, localFilters, highlightCustomerId, openEntity],
   )
 
-  const resetFilters = useCallback(() => {
+  const clearFilters = useCallback(() => {
     setFiltersState(defaultFilt)
     setLocalFilters(DEFAULT_LOCAL)
     setHighlightCustomerId(null)
@@ -237,12 +351,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setScenarioState('Base')
     setScenarioParams(DEFAULT_SCENARIO_PARAMS.Base)
     setDateBasis('recognition')
-    writeUrl(defaultFilt, 'Base', 'recognition', DEFAULT_LOCAL, null, null)
+    setInvestigationState(DEFAULT_INVESTIGATION)
+    setNavPath([])
+    setContextFeedback('Reset to company defaults')
+    writeUrl(defaultFilt, 'Base', 'recognition', DEFAULT_LOCAL, null, null, DEFAULT_INVESTIGATION)
   }, [defaultFilt, writeUrl])
 
   const clearSelection = useCallback(() => {
     setHighlightCustomerId(null)
     setOpenEntity(null)
+    setAnalysisTrail([])
     setLocalFilters((prev) => ({
       ...prev,
       exceptionType: null,
@@ -255,6 +373,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       writeUrl(next, scenario, dateBasis, DEFAULT_LOCAL, null, null)
       return next
     })
+    setContextFeedback('Selection cleared (global filters retained)')
   }, [writeUrl, scenario, dateBasis])
 
   const openEntityDrawer = useCallback(
@@ -268,9 +387,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         return [...prev, { entityType: state.entityType, entityId: state.entityId, label }]
       })
-      writeUrl(filters, scenario, dateBasis, localFilters, highlightCustomerId, state, false)
+      writeUrl(filters, scenario, dateBasis, localFilters, highlightCustomerId, state, investigation, false)
     },
-    [writeUrl, filters, scenario, dateBasis, localFilters, highlightCustomerId],
+    [writeUrl, filters, scenario, dateBasis, localFilters, highlightCustomerId, investigation],
   )
 
   const closeEntity = useCallback(() => {
@@ -286,20 +405,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   )
 
   const navigateWithContext = useCallback(
-    (
-      path: string,
-      extras: {
-        customerId?: string | null
-        region?: string | null
-        serviceType?: string | null
-        startPeriod?: string | null
-        endPeriod?: string | null
-        exceptionType?: string | null
-        exceptionStatus?: string | null
-        highlightCustomerId?: string | null
-        openEntity?: OpenEntityState | null
-      } = {},
-    ) => {
+    (path: string, extras: NavigateExtras = {}) => {
       const nextFilters: GlobalFilters = {
         ...filters,
         customerIds: extras.customerId
@@ -308,18 +414,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
             ? []
             : filters.customerIds,
         regions: extras.region
-          ? ([extras.region] as GlobalFilters['regions'])
+          ? ([extras.region] as RegionCode[])
           : extras.region === null
             ? []
             : filters.regions,
+        metros:
+          extras.metro !== undefined
+            ? extras.metro
+              ? [extras.metro]
+              : []
+            : (filters.metros ?? []),
         serviceTypes: extras.serviceType
-          ? ([extras.serviceType] as GlobalFilters['serviceTypes'])
+          ? ([extras.serviceType] as ServiceType[])
           : extras.serviceType === null
             ? []
             : filters.serviceTypes,
         startPeriod: extras.startPeriod ?? filters.startPeriod,
         endPeriod: extras.endPeriod ?? filters.endPeriod,
       }
+      // When setting metro alone, ensure region aligns if known from data
+      if (extras.metro && !extras.region) {
+        const ship = data.shipments.find((s) => s.metro === extras.metro)
+        if (ship) nextFilters.regions = [ship.region]
+      }
+
       const nextLocal: LocalAnalysisFilters = {
         ...localFilters,
         exceptionType:
@@ -335,11 +453,64 @@ export function AppProvider({ children }: { children: ReactNode }) {
           : extras.customerId ?? highlightCustomerId
       const ent = extras.openEntity !== undefined ? extras.openEntity : openEntity
 
+      const nextInv: InvestigationState = {
+        ...investigation,
+        sourcePage: extras.sourcePage ?? location.pathname,
+        id: extras.investigationId !== undefined ? extras.investigationId : investigation.id,
+        title:
+          extras.investigationTitle !== undefined
+            ? extras.investigationTitle
+            : investigation.title,
+        steps: extras.investigationSteps ?? investigation.steps,
+        stepIndex:
+          extras.investigationStepIndex !== undefined
+            ? extras.investigationStepIndex
+            : investigation.stepIndex,
+        toast: extras.toast ?? null,
+      }
+
+      const scopeBits = [
+        nextFilters.metros[0],
+        nextFilters.regions[0],
+        nextFilters.serviceTypes[0],
+        nextFilters.customerIds[0]
+          ? data.customers.find((c) => c.customer_id === nextFilters.customerIds[0])?.customer_name
+          : null,
+        nextLocal.exceptionType,
+        `${nextFilters.startPeriod}–${nextFilters.endPeriod}`,
+      ].filter(Boolean)
+      const feedback =
+        extras.toast ??
+        `Opening ${path} · Filters: ${scopeBits.join(' · ') || 'Company Total'}`
+
+      // Record where we came from so the breadcrumb can restore the original context
+      if (path !== location.pathname) {
+        setNavPath((prev) =>
+          [
+            ...prev,
+            {
+              path: location.pathname,
+              search: location.search,
+              filters,
+              localFilters,
+              highlightCustomerId,
+              scenario,
+            },
+          ].slice(-NAV_PATH_LIMIT),
+        )
+      }
+
       setFiltersState(nextFilters)
       setLocalFilters(nextLocal)
       setHighlightCustomerId(hl)
       if (ent) setOpenEntity(ent)
       else if (extras.openEntity === null) setOpenEntity(null)
+      setInvestigationState(nextInv)
+      setContextFeedback(feedback)
+
+      if (extras.clearDrillContext) {
+        setDrillStack([])
+      }
 
       const qs = buildAnalysisSearch(nextFilters, {
         scenario,
@@ -349,11 +520,62 @@ export function AppProvider({ children }: { children: ReactNode }) {
         highlightCustomerId: hl,
         entityType: ent && ent.entityType !== 'kpi' ? (ent.entityType as EntityType) : null,
         entityId: ent && ent.entityType !== 'kpi' ? ent.entityId : null,
+        sourcePage: nextInv.sourcePage,
+        investigationId: nextInv.id,
+        toast: nextInv.toast,
       })
       navigate({ pathname: path, search: qs ? `?${qs}` : '' })
     },
-    [filters, localFilters, highlightCustomerId, openEntity, scenario, dateBasis, navigate],
+    [
+      filters,
+      localFilters,
+      highlightCustomerId,
+      openEntity,
+      scenario,
+      dateBasis,
+      navigate,
+      investigation,
+      location.pathname,
+      location.search,
+      data,
+    ],
   )
+
+  const navigateBack = useCallback(
+    (index?: number) => {
+      if (navPath.length === 0) return
+      const i = index == null ? navPath.length - 1 : Math.max(0, Math.min(index, navPath.length - 1))
+      const entry = navPath[i]
+      setNavPath(navPath.slice(0, i))
+      setFiltersState(entry.filters)
+      setLocalFilters(entry.localFilters)
+      setHighlightCustomerId(entry.highlightCustomerId)
+      setScenarioState(entry.scenario)
+      setOpenEntity(null)
+      setContextFeedback('Returned to previous analysis with its original filters')
+      navigate({ pathname: entry.path, search: entry.search })
+    },
+    [navPath, navigate],
+  )
+
+  const openCustomer360 = useCallback(
+    (customerId: string) => {
+      const name = data.customers.find((c) => c.customer_id === customerId)?.customer_name ?? customerId
+      navigateWithContext('/customers', {
+        highlightCustomerId: customerId,
+        openEntity: null,
+        sourcePage: location.pathname,
+        toast: `Customer 360 · ${name} (global filters retained)`,
+      })
+    },
+    [data.customers, navigateWithContext, location.pathname],
+  )
+
+  const clearLocalFilters = useCallback(() => {
+    setLocalFilters(DEFAULT_LOCAL)
+    writeUrl(filters, scenario, dateBasis, DEFAULT_LOCAL, highlightCustomerId, openEntity)
+    setContextFeedback('Local page filters cleared (global filters retained)')
+  }, [writeUrl, filters, scenario, dateBasis, highlightCustomerId, openEntity])
 
   const updateExceptionStatus = useCallback((exceptionId: string, status: ExceptionStatus) => {
     setExceptionOverrides((prev) => ({ ...prev, [exceptionId]: status }))
@@ -363,7 +585,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     data,
     filters,
     setFilters,
-    resetFilters,
+    clearFilters,
+    resetFilters: clearFilters,
     clearSelection,
     scenario,
     setScenario: (s) => {
@@ -414,6 +637,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return next
       })
     },
+    investigation,
+    setInvestigation: (s) => {
+      setInvestigationState((prev) => (typeof s === 'function' ? s(prev) : s))
+    },
+    clearInvestigation: () => {
+      setInvestigationState(DEFAULT_INVESTIGATION)
+      setContextFeedback(null)
+    },
+    dismissToast: () => {
+      setContextFeedback(null)
+      setInvestigationState((prev) => ({ ...prev, toast: null }))
+    },
+    contextFeedback,
+    navPath,
+    navigateBack,
+    clearLocalFilters,
+    openCustomer360,
   }
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>

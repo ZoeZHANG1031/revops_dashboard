@@ -18,6 +18,9 @@ export interface AnalysisQuery {
   entityType?: EntityType
   entityId?: string
   highlightCustomerId?: string
+  sourcePage?: string
+  investigationId?: string
+  toast?: string
 }
 
 export type EntityType =
@@ -42,12 +45,14 @@ export function parseAnalysisSearch(search: string): AnalysisQuery {
   const service = sp.get('service') as ServiceType | null
   const scenario = sp.get('scenario') as AnalysisQuery['scenario'] | null
   const dateBasis = sp.get('dateBasis') as DateBasis | null
+  const metro = sp.get('metro')
   return {
     filters: {
       startPeriod: sp.get('from') ?? undefined,
       endPeriod: sp.get('to') ?? undefined,
       customerIds: customer ? [customer] : undefined,
       regions: region ? [region] : undefined,
+      metros: metro ? [metro] : undefined,
       serviceTypes: service ? [service] : undefined,
       snapshot: sp.get('snapshot') ?? undefined,
     },
@@ -59,6 +64,9 @@ export function parseAnalysisSearch(search: string): AnalysisQuery {
     entityType: (sp.get('entityType') as EntityType | null) ?? undefined,
     entityId: sp.get('entityId') ?? undefined,
     highlightCustomerId: sp.get('hlCustomer') ?? undefined,
+    sourcePage: sp.get('fromPage') ?? undefined,
+    investigationId: sp.get('guide') ?? undefined,
+    toast: sp.get('toast') ?? undefined,
   }
 }
 
@@ -73,6 +81,9 @@ export function buildAnalysisSearch(
     entityType?: EntityType | null
     entityId?: string | null
     highlightCustomerId?: string | null
+    sourcePage?: string | null
+    investigationId?: string | null
+    toast?: string | null
   } = {},
 ): string {
   const sp = new URLSearchParams()
@@ -80,6 +91,7 @@ export function buildAnalysisSearch(
   sp.set('to', filters.endPeriod)
   if (filters.customerIds[0]) sp.set('customer', filters.customerIds[0])
   if (filters.regions[0]) sp.set('region', filters.regions[0])
+  if (filters.metros?.[0]) sp.set('metro', filters.metros[0])
   if (filters.serviceTypes[0]) sp.set('service', filters.serviceTypes[0])
   if (filters.snapshot) sp.set('snapshot', filters.snapshot)
   if (extras.scenario) sp.set('scenario', extras.scenario)
@@ -90,6 +102,9 @@ export function buildAnalysisSearch(
   if (extras.entityType) sp.set('entityType', extras.entityType)
   if (extras.entityId) sp.set('entityId', extras.entityId)
   if (extras.highlightCustomerId) sp.set('hlCustomer', extras.highlightCustomerId)
+  if (extras.sourcePage) sp.set('fromPage', extras.sourcePage)
+  if (extras.investigationId) sp.set('guide', extras.investigationId)
+  if (extras.toast) sp.set('toast', extras.toast)
   return sp.toString()
 }
 

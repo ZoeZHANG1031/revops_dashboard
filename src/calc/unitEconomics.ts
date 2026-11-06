@@ -67,7 +67,7 @@ const VARIABLE = new Set([
 export function computeUnitEconomics(
   data: DataStore,
   filters: GlobalFilters,
-  dimension: 'customer' | 'region' | 'service' | 'month' | 'dsp' | 'zone' = 'customer',
+  dimension: UnitEconDimension = 'customer',
   fixedScenario: 'Base' | 'Downside' = 'Base',
 ): UnitEconomicsSummary {
   const lines = filterBillingLines(data, filters)
@@ -179,7 +179,8 @@ export function computeUnitEconomics(
     { key: 'volume', label: 'Volume Effect', amount: volumeEffect },
     { key: 'rpp', label: 'Revenue per Package Effect', amount: priceEffect },
     { key: 'cpp', label: 'Variable Cost per Package Effect', amount: costEffect },
-    { key: 'mix', label: 'Customer / Service Mix & Other', amount: plug },
+    // Plug = late − early − (volume + RPP + CPP effects); not separately measured, so labelled residual
+    { key: 'mix', label: 'Mix & Unexplained Residual', amount: plug },
     { key: 'end_contrib', label: 'Ending Contribution Profit', amount: lateProfit },
     { key: 'fixed', label: 'Fixed Cost Change (signed to OP)', amount: fixedCostChange },
     { key: 'end_op', label: 'Ending Operating Profit', amount: lateOp },
@@ -274,18 +275,24 @@ export function computeUnitEconomics(
 function buildDimension(
   data: DataStore,
   filters: GlobalFilters,
-  dimension: 'customer' | 'region' | 'service' | 'month' | 'dsp' | 'zone',
+  dimension: UnitEconDimension,
   lines: ReturnType<typeof filterBillingLines>,
   costs: ReturnType<typeof filterCosts>,
 ) {
   const map = new Map<string, { revenue: number; variableCost: number; packages: number; label: string }>()
+  const needShip = dimension === 'zone' || dimension === 'dsp' || dimension === 'metro'
+  const shipById = needShip ? new Map(data.shipments.map((x) => [x.shipment_id, x])) : null
+  const custName = dimension === 'customer' ? new Map(data.customers.map((c) => [c.customer_id, c.customer_name])) : null
 
   lines.forEach((l) => {
     let key = ''
     let label = ''
     if (dimension === 'customer') {
       key = l.customer_id
-      label = data.customers.find((c) => c.customer_id === key)?.customer_name ?? key
+      label = custName!.get(key) ?? key
+    } else if (dimension === 'metro') {
+      key = shipById!.get(l.shipment_id)?.metro ?? 'NA'
+      label = key
     } else if (dimension === 'region') {
       key = l.region
       label = l.region
@@ -296,11 +303,11 @@ function buildDimension(
       key = l.accounting_period
       label = l.accounting_period
     } else if (dimension === 'zone') {
-      const s = data.shipments.find((x) => x.shipment_id === l.shipment_id)
+      const s = shipById!.get(l.shipment_id)
       key = String(s?.zone ?? 'NA')
       label = `Zone ${key}`
     } else {
-      const s = data.shipments.find((x) => x.shipment_id === l.shipment_id)
+      const s = shipById!.get(l.shipment_id)
       key = s?.dsp_id ?? 'NA'
       label = key
     }
@@ -319,7 +326,13 @@ function buildDimension(
       else if (dimension === 'service') key = c.service_type ?? 'NA'
       else if (dimension === 'month') key = c.accounting_period
       else if (dimension === 'dsp') key = c.dsp_id ?? 'NA'
-      else key = 'NA'
+      else if (dimension === 'zone') {
+        // Attribute via shipment join (previously keyed 'NA' → zone CPP was always 0)
+        const z = c.shipment_id ? shipById!.get(c.shipment_id)?.zone : undefined
+        key = z != null ? String(z) : 'NA'
+      } else if (dimension === 'metro') {
+        key = (c.shipment_id ? shipById!.get(c.shipment_id)?.metro : undefined) ?? 'NA'
+      } else key = 'NA'
       const cur = map.get(key)
       if (cur) cur.variableCost += c.amount
     })
@@ -337,5 +350,106 @@ function buildDimension(
     }))
     .sort((a, b) => b.revenue - a.revenue)
 }
+
+export const VARIABLE_COST_TYPES = [
+  'DSP Delivery',
+  'Sorting',
+  'Linehaul',
+  'Claims',
+  'Redelivery',
+  'Other Variable',
+] as const
+export type VariableCostType = (typeof VARIABLE_COST_TYPES)[number]
+
+export interface CostDriverRow {
+  key: string
+  label: string
+  packages: number
+  revenue: number
+  rpp: number | null
+  /** Variable cost per billed package by cost type */
+  perPackage: Record<VariableCostType, number | null>
+  totalCostPerPackage: number | null
+  contributionPerPackage: number | null
+  contributionMargin: number | null
+}
+
+/**
+ * Cost per billed package by cost type for a dimension. Packages = billed lines in the key;
+ * costs attributed via cost.customer_id / service_type / dsp_id, or shipment join for metro.
+ */
+export function computeCostDrivers(
+  data: DataStore,
+  filters: GlobalFilters,
+  dimension: 'service' | 'metro' | 'customer' | 'dsp' | 'company',
+): CostDriverRow[] {
+  const lines = filterBillingLines(data, filters)
+  const costs = filterCosts(data, filters)
+  const shipById =
+    dimension === 'metro' || dimension === 'dsp' ? new Map(data.shipments.map((x) => [x.shipment_id, x])) : null
+  const custName = new Map(data.customers.map((c) => [c.customer_id, c.customer_name]))
+  const lineKey = (l: (typeof lines)[number]): string =>
+    dimension === 'company'
+      ? 'ALL'
+      : dimension === 'service'
+        ? l.service_type
+        : dimension === 'customer'
+          ? l.customer_id
+          : dimension === 'metro'
+            ? (shipById!.get(l.shipment_id)?.metro ?? 'NA')
+            : (shipById!.get(l.shipment_id)?.dsp_id ?? 'NA')
+  const costKey = (c: (typeof costs)[number]): string =>
+    dimension === 'company'
+      ? 'ALL'
+      : dimension === 'service'
+        ? (c.service_type ?? 'NA')
+        : dimension === 'customer'
+          ? (c.customer_id ?? 'NA')
+          : dimension === 'metro'
+            ? ((c.shipment_id ? shipById!.get(c.shipment_id)?.metro : null) ?? 'NA')
+            : (c.dsp_id ?? 'NA')
+
+  const agg = new Map<string, { packages: number; revenue: number; cost: Record<string, number> }>()
+  for (const l of lines) {
+    const k = lineKey(l)
+    let cur = agg.get(k)
+    if (!cur) {
+      cur = { packages: 0, revenue: 0, cost: {} }
+      agg.set(k, cur)
+    }
+    cur.packages += 1
+    cur.revenue += l.net_amount
+  }
+  for (const c of costs) {
+    if (!VARIABLE.has(c.cost_type)) continue
+    const cur = agg.get(costKey(c))
+    if (!cur) continue
+    cur.cost[c.cost_type] = (cur.cost[c.cost_type] ?? 0) + c.amount
+  }
+  return [...agg.entries()]
+    .filter(([k, v]) => k !== 'NA' && v.packages > 0)
+    .map(([key, v]) => {
+      const perPackage = Object.fromEntries(
+        VARIABLE_COST_TYPES.map((t) => [t, v.packages ? money((v.cost[t] ?? 0) / v.packages) : null]),
+      ) as Record<VariableCostType, number | null>
+      const totalCost = VARIABLE_COST_TYPES.reduce((a, t) => a + (v.cost[t] ?? 0), 0)
+      const rpp = v.packages ? money(v.revenue / v.packages) : null
+      const tcpp = v.packages ? money(totalCost / v.packages) : null
+      return {
+        key,
+        label: dimension === 'customer' ? (custName.get(key) ?? key) : dimension === 'company' ? 'Company' : key,
+        packages: v.packages,
+        revenue: money(v.revenue),
+        rpp,
+        perPackage,
+        totalCostPerPackage: tcpp,
+        contributionPerPackage: rpp != null && tcpp != null ? money(rpp - tcpp) : null,
+        contributionMargin: pct(v.revenue - totalCost, v.revenue),
+      }
+    })
+    .sort((a, b) => b.revenue - a.revenue)
+}
+
+export type UnitEconDimension = 'customer' | 'region' | 'metro' | 'service' | 'month' | 'dsp' | 'zone'
 
 export type { RegionCode, ServiceType }

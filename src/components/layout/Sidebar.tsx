@@ -1,24 +1,8 @@
-import {
-  Activity,
-  Building2,
-  GitCompare,
-  LayoutDashboard,
-  LineChart,
-  Package,
-  Users,
-  Wallet,
-} from 'lucide-react'
+import { Package } from 'lucide-react'
 import { NavLink, useLocation } from 'react-router-dom'
+import { PAGE_META, PAGE_ORDER } from '@/lib/icons'
 
-const NAV = [
-  { to: '/', label: 'Company Overview', icon: Building2 },
-  { to: '/executive', label: 'Executive Overview', icon: LayoutDashboard },
-  { to: '/lifecycle', label: 'Revenue Lifecycle', icon: GitCompare },
-  { to: '/reconciliation', label: 'Reconciliation', icon: Activity },
-  { to: '/forecasting', label: 'Forecasting', icon: LineChart },
-  { to: '/customers', label: 'Customer Intelligence', icon: Users },
-  { to: '/unit-economics', label: 'Unit Economics', icon: Wallet },
-]
+const NAV = PAGE_ORDER.map((p) => ({ to: p, label: PAGE_META[p].label, icon: PAGE_META[p].icon }))
 
 export function Sidebar() {
   const { search } = useLocation()
@@ -32,7 +16,7 @@ export function Sidebar() {
           </div>
           <div>
             <p className="text-sm font-semibold text-ink">Last-Mile RevOps</p>
-            <p className="text-[10px] text-ink-muted">Intelligence Platform · Synthetic</p>
+            <p className="text-xs text-ink-muted">Intelligence Platform · Synthetic</p>
           </div>
         </div>
       </div>
@@ -55,7 +39,7 @@ export function Sidebar() {
           </NavLink>
         ))}
       </nav>
-      <div className="border-t border-[#dce6df] p-3 text-[10px] leading-relaxed text-ink-muted">
+      <div className="border-t border-[#dce6df] p-3 text-xs leading-relaxed text-ink-muted">
         Independent demo inspired by last-mile ops visuals. Not a Jitsu product. Synthetic data only.
       </div>
     </aside>

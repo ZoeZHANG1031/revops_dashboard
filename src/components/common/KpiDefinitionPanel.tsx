@@ -23,7 +23,7 @@ export function KpiDefinitionPanel({
         </div>
         <div>
           <dt className="font-semibold text-ink">Formula</dt>
-          <dd className="font-mono text-[11px] text-brand-800">{definition.formula}</dd>
+          <dd className="font-mono text-[13px] text-brand-800">{definition.formula}</dd>
         </div>
         <div>
           <dt className="font-semibold text-ink">Source Tables</dt>

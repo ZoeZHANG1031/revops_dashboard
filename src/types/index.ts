@@ -332,6 +332,8 @@ export interface GlobalFilters {
   endPeriod: string
   customerIds: string[]
   regions: RegionCode[]
+  /** Optional metro names (e.g. Houston). Empty = all metros in selected regions. */
+  metros: string[]
   serviceTypes: ServiceType[]
   snapshot: string
 }

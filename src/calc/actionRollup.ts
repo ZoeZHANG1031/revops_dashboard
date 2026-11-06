@@ -1,6 +1,7 @@
 import { filterExceptions } from '@/lib/filters'
 import { money, sumMoney } from '@/lib/money'
-import type { DataStore, FactException, GlobalFilters, ResponsibleTeam } from '@/types'
+import type { DataStore, ExceptionType, FactException, GlobalFilters, ResponsibleTeam } from '@/types'
+import { EXCEPTION_REGISTRY, RECOVERABLE_EXCEPTION_TYPES, type ExposureClass } from './exceptionRegistry'
 
 export interface RootCauseRollup {
   rootCauseKey: string
@@ -16,9 +17,10 @@ export interface RootCauseRollup {
   recoverability: string
   priorityScore: number
   exceptions: FactException[]
+  exposureClass: ExposureClass
 }
 
-const RECOVERABLE = new Set(['Missing Billing', 'Rate Mismatch', 'Missing Surcharge', 'Unbilled Packages'])
+const RECOVERABLE = RECOVERABLE_EXCEPTION_TYPES as Set<string>
 
 function severityRank(s: string): number {
   if (s === 'Critical') return 4
@@ -79,15 +81,8 @@ export function rollupExceptionsByRootCause(
                 ? 'Void duplicate & credit customer'
                 : topSev?.recommended_action ?? 'Investigate'
 
-    const recoverability = RECOVERABLE.has(exceptionType)
-      ? 'High — rating defect'
-      : exceptionType === 'Overdue AR'
-        ? 'Collections — not revenue recovery'
-        : exceptionType === 'Duplicate Billing'
-          ? 'Refund/overcharge risk — not recoverable revenue'
-          : exceptionType === 'Timing Difference'
-            ? 'N/A — accounting cut-off'
-            : 'Investigate'
+    const def = EXCEPTION_REGISTRY[exceptionType as ExceptionType]
+    const recoverability = def?.recoverability ?? 'Investigate'
 
     // Priority: actionability × open exposure × severity × age
     const actionability = RECOVERABLE.has(exceptionType) ? 3 : exceptionType === 'Overdue AR' ? 2 : 1
@@ -109,6 +104,7 @@ export function rollupExceptionsByRootCause(
       recoverability,
       priorityScore,
       exceptions: list,
+      exposureClass: def?.exposureClass ?? 'Data Quality',
     })
   })
 

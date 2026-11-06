@@ -14,12 +14,15 @@ export function DataTable<T extends { id?: string }>({
   rowKey,
   onRowClick,
   emptyMessage = 'No rows for current filters',
+  selectedKey,
 }: {
   rows: T[]
   columns: Column<T>[]
   rowKey: (row: T) => string
   onRowClick?: (row: T) => void
   emptyMessage?: string
+  /** Highlights the row whose rowKey matches (shared selection with charts) */
+  selectedKey?: string | null
 }) {
   const [sortKey, setSortKey] = useState<string | null>(null)
   const [asc, setAsc] = useState(false)
@@ -46,9 +49,9 @@ export function DataTable<T extends { id?: string }>({
   }
 
   return (
-    <div className="overflow-auto scrollbar-thin rounded-lg border border-slate-200">
-      <table className="min-w-full text-left text-xs">
-        <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-ink-muted">
+    <div className="overflow-auto scrollbar-thin rounded-lg border border-[#e1e9e4]">
+      <table className="min-w-full text-left text-[13px]">
+        <thead className="bg-[#f7faf8] text-xs font-semibold uppercase tracking-wide text-ink-muted">
           <tr>
             {columns.map((c) => (
               <th
@@ -73,13 +76,18 @@ export function DataTable<T extends { id?: string }>({
           {sorted.map((row) => (
             <tr
               key={rowKey(row)}
-              className={`border-t border-slate-100 ${onRowClick ? 'cursor-pointer hover:bg-brand-50/50' : ''}`}
+              className={`border-t border-slate-100 ${onRowClick ? 'cursor-pointer hover:bg-brand-50/50' : ''} ${
+                selectedKey != null && rowKey(row) === selectedKey
+                  ? 'bg-brand-50 shadow-[inset_3px_0_0_#123C35]'
+                  : ''
+              }`}
+              aria-selected={selectedKey != null && rowKey(row) === selectedKey}
               onClick={() => onRowClick?.(row)}
             >
               {columns.map((c) => (
                 <td
                   key={c.key}
-                  className={`px-3 py-2 text-ink ${c.align === 'right' ? 'text-right font-mono' : ''}`}
+                  className={`px-3 py-2 text-ink ${c.align === 'right' ? 'whitespace-nowrap text-right font-mono' : ''}`}
                 >
                   {c.render(row)}
                 </td>

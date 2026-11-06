@@ -1,6 +1,6 @@
 import { formatCurrency, formatPercent } from '@/lib/money'
 import type { DataStore, GlobalFilters } from '@/types'
-import { computeSharedMetrics } from './metricRegistry'
+import { computeSharedMetrics, type SharedMetrics } from './metricRegistry'
 import { rollupExceptionsByRootCause } from './actionRollup'
 import { computeCustomerHealth } from './customerHealth'
 
@@ -16,8 +16,9 @@ export function buildExecutiveInsight(
   data: DataStore,
   filters: GlobalFilters,
   scenario: 'Base' | 'Upside' | 'Downside' = 'Base',
+  precomputed?: SharedMetrics,
 ): ExecutiveInsight {
-  const m = computeSharedMetrics(data, filters, scenario)
+  const m = precomputed ?? computeSharedMetrics(data, filters, scenario)
   const rollups = rollupExceptionsByRootCause(data, filters)
   const health = computeCustomerHealth(data, filters)
   const atRisk = health.filter((h) => h.healthBand === 'At Risk' || h.healthBand === 'Critical').length

@@ -150,7 +150,7 @@ export function evaluateForecastAccuracy(
     ),
   ].sort()
 
-  const points = periods.map((period) => {
+  let points = periods.map((period) => {
     const actual = computeRecognizedRevenue(data, {
       ...filters,
       startPeriod: period,
@@ -171,6 +171,13 @@ export function evaluateForecastAccuracy(
     return { period, actual, forecast, error: money(actual - forecast) }
   })
 
+  // Only periods with Existing forecast rows are comparable (no forecast ≠ forecast of $0)
+  const fcPeriods = new Set(
+    data.forecasts
+      .filter((f) => f.scenario === scenario && f.forecast_type === 'Existing')
+      .map((f) => f.accounting_period),
+  )
+  points = points.filter((p) => fcPeriods.has(p.period))
   const n = points.length
   if (n === 0) {
     return { mae: null, rmse: null, wape: null, bias: null, variance: null, points }

@@ -1,6 +1,10 @@
 import { ChevronDown } from 'lucide-react'
-import { useState, type ReactNode } from 'react'
+import { useContext, useState, type ReactNode } from 'react'
+import { CardNestingContext } from './cardContext'
 
+/**
+ * Level-3 disclosure. Top-level: its own card. Inside a card: an inline divider row (no nested card).
+ */
 export function Collapsible({
   title,
   subtitle,
@@ -15,26 +19,43 @@ export function Collapsible({
   actions?: ReactNode
 }) {
   const [open, setOpen] = useState(defaultOpen)
+  const nested = useContext(CardNestingContext)
+  const header = (
+    <div className={`flex items-center justify-between gap-3 ${nested ? 'py-2' : 'px-5 py-3.5'}`}>
+      <button
+        type="button"
+        className="flex min-w-0 flex-1 items-start gap-2 text-left"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+      >
+        <ChevronDown
+          size={16}
+          className={`mt-0.5 shrink-0 text-ink-muted transition-transform ${open ? 'rotate-0' : '-rotate-90'}`}
+        />
+        <span>
+          <span className={`block font-semibold text-ink ${nested ? 'text-[13px]' : 'text-[15px]'}`}>{title}</span>
+          {subtitle && <span className="mt-0.5 block text-xs text-ink-muted">{subtitle}</span>}
+        </span>
+      </button>
+      {actions}
+    </div>
+  )
+  if (nested) {
+    return (
+      <div className="mt-3 border-t border-[#e8eeea]">
+        {header}
+        {open && <div className="pt-1">{children}</div>}
+      </div>
+    )
+  }
   return (
     <section className="card-surface overflow-hidden">
-      <div className="flex items-center justify-between gap-3 px-4 py-3">
-        <button
-          type="button"
-          className="flex min-w-0 flex-1 items-start gap-2 text-left"
-          onClick={() => setOpen((v) => !v)}
-        >
-          <ChevronDown
-            size={16}
-            className={`mt-0.5 shrink-0 text-ink-muted transition-transform ${open ? 'rotate-0' : '-rotate-90'}`}
-          />
-          <span>
-            <span className="block text-sm font-semibold text-ink">{title}</span>
-            {subtitle && <span className="mt-0.5 block text-xs text-ink-muted">{subtitle}</span>}
-          </span>
-        </button>
-        {actions}
-      </div>
-      {open && <div className="border-t border-[#e3ebe6] px-4 py-3">{children}</div>}
+      {header}
+      {open && (
+        <div className="border-t border-[#e8eeea] px-5 py-4">
+          <CardNestingContext.Provider value>{children}</CardNestingContext.Provider>
+        </div>
+      )}
     </section>
   )
 }

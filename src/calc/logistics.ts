@@ -136,72 +136,54 @@ export function computeGeographicProfitability(
   dimension: 'metro' | 'zone' | 'service' = 'metro',
 ): GeoProfitRow[] {
   const lines = filterBillingLines(data, filters)
+  const costs = filterCosts(data, filters)
+  const shipById = new Map(data.shipments.map((s) => [s.shipment_id, s]))
   const map = new Map<
     string,
     { label: string; revenue: number; packages: number; dspCost: number }
   >()
+  // shipment_id → bucket keys of its billing lines (attributes variable cost in one pass)
+  const shipKeys = new Map<string, Set<string>>()
 
-  lines.forEach((l) => {
-    const ship = data.shipments.find((s) => s.shipment_id === l.shipment_id)
+  for (const l of lines) {
+    const ship = shipById.get(l.shipment_id)
     let key = ''
-    let label = ''
-    if (dimension === 'metro') {
-      key = ship?.metro ?? `${l.region}-Unknown`
-      label = key
-    } else if (dimension === 'zone') {
-      key = `${l.region}-Z${ship?.zone ?? '?'}`
-      label = key
-    } else {
-      key = l.service_type
-      label = l.service_type
-    }
-    const cur = map.get(key) ?? { label, revenue: 0, packages: 0, dspCost: 0 }
+    if (dimension === 'metro') key = ship?.metro ?? `${l.region}-Unknown`
+    else if (dimension === 'zone') key = `${l.region}-Z${ship?.zone ?? '?'}`
+    else key = l.service_type
+    const cur = map.get(key) ?? { label: key, revenue: 0, packages: 0, dspCost: 0 }
     cur.revenue += l.net_amount
     cur.packages += 1
     map.set(key, cur)
-  })
+    let ks = shipKeys.get(l.shipment_id)
+    if (!ks) {
+      ks = new Set()
+      shipKeys.set(l.shipment_id, ks)
+    }
+    ks.add(key)
+  }
 
-  filterCosts(data, filters)
-    .filter((c) => c.cost_type === 'DSP Delivery')
-    .forEach((c) => {
-      const ship = c.shipment_id
-        ? data.shipments.find((s) => s.shipment_id === c.shipment_id)
-        : null
+  // Contribution = line revenue − variable costs linked to those packages (same rule as before, indexed)
+  const varByKey = new Map<string, number>()
+  for (const c of costs) {
+    if (c.cost_type === 'DSP Delivery') {
+      const ship = c.shipment_id ? shipById.get(c.shipment_id) : null
       let key = ''
       if (dimension === 'metro') key = ship?.metro ?? `${c.region}-Unknown`
       else if (dimension === 'zone') key = `${c.region}-Z${ship?.zone ?? '?'}`
       else key = c.service_type ?? 'NA'
       const cur = map.get(key)
       if (cur) cur.dspCost += c.amount
-    })
+    }
+    if (c.shipment_id == null || !GEO_VARIABLE.has(c.cost_type)) continue
+    const ks = shipKeys.get(c.shipment_id)
+    if (!ks) continue
+    for (const k of ks) varByKey.set(k, (varByKey.get(k) ?? 0) + c.amount)
+  }
 
-  // Variable costs approx for margin: use DSP + share of other variable via package ratio is complex;
-  // compute contribution using line revenue − shipment variable costs linked to those packages
   return [...map.entries()]
     .map(([key, v]) => {
-      // Pull other variable costs for shipments in this bucket
-      const shipIds = new Set(
-        lines
-          .filter((l) => {
-            const ship = data.shipments.find((s) => s.shipment_id === l.shipment_id)
-            if (dimension === 'metro') return (ship?.metro ?? `${l.region}-Unknown`) === key
-            if (dimension === 'zone') return `${l.region}-Z${ship?.zone ?? '?'}` === key
-            return l.service_type === key
-          })
-          .map((l) => l.shipment_id),
-      )
-      const varCost = sumMoney(
-        filterCosts(data, filters)
-          .filter(
-            (c) =>
-              c.shipment_id != null &&
-              shipIds.has(c.shipment_id) &&
-              ['DSP Delivery', 'Sorting', 'Linehaul', 'Redelivery', 'Claims', 'Other Variable'].includes(
-                c.cost_type,
-              ),
-          )
-          .map((c) => c.amount),
-      )
+      const varCost = money(varByKey.get(key) ?? 0)
       const cm = pct(v.revenue - varCost, v.revenue)
       return {
         key,
@@ -216,6 +198,15 @@ export function computeGeographicProfitability(
     })
     .sort((a, b) => b.revenue - a.revenue)
 }
+
+const GEO_VARIABLE = new Set([
+  'DSP Delivery',
+  'Sorting',
+  'Linehaul',
+  'Redelivery',
+  'Claims',
+  'Other Variable',
+])
 
 export interface ShipmentRevenueFlow {
   stages: Array<{

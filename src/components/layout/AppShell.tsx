@@ -1,5 +1,6 @@
 import { Outlet } from 'react-router-dom'
 import { DetailDrawer } from '@/components/common/DetailDrawer'
+import { InvestigationBreadcrumb } from '@/components/common/InvestigationBreadcrumb'
 import { useApp } from '@/context/AppContext'
 import { GlobalFiltersBar } from './GlobalFilters'
 import { Sidebar } from './Sidebar'
@@ -13,44 +14,61 @@ export function AppShell() {
     analysisTrail,
     popAnalysisTrail,
     clearSelection,
-    resetFilters,
+    clearFilters,
+    clearLocalFilters,
+    localFilters,
   } = useApp()
+  const hasLocal = Boolean(
+    localFilters.exceptionType || localFilters.exceptionStatus || localFilters.pipelineStage || localFilters.costType,
+  )
 
   return (
     <div className="flex min-h-screen">
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="border-b border-[#dce6df] bg-white/90 px-4 py-3 backdrop-blur">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h1 className="text-lg font-semibold text-ink">
-                Last-Mile Revenue Operations Intelligence
-              </h1>
-              <p className="text-xs text-ink-muted">
-                Snapshot {data.meta.snapshot_label} · Seed {data.meta.seed} · Updated{' '}
-                {new Date(data.meta.generated_at).toLocaleString()}
-              </p>
+        <header className="border-b border-[#e1e9e4] bg-white/90 px-6 py-3 backdrop-blur">
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+            <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
+              <h1 className="t-app-title text-ink">Last-Mile RevOps Intelligence</h1>
+              <span
+                className="rounded-full bg-[#f1f5f2] px-2.5 py-0.5 text-xs text-ink-muted"
+                title={`Snapshot ${data.meta.snapshot_label} · Seed ${data.meta.seed} · Updated ${new Date(data.meta.generated_at).toLocaleString()}`}
+              >
+                {data.meta.snapshot_label.replace(/^Synthetic Snapshot\s*/i, '')} · seed {data.meta.seed} ·{' '}
+                {new Date(data.meta.generated_at).toLocaleDateString()}
+              </span>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                className="rounded-md border border-[#dce6df] px-2 py-1 text-[11px] text-ink-muted hover:bg-[#f5f8f5]"
+                className="rounded-md border border-[#dce6df] px-2.5 py-1 text-[13px] text-ink-muted hover:bg-[#f5f8f5]"
+                title="Clears highlight, entity drawer, and exception focus — keeps global filters"
                 onClick={clearSelection}
               >
                 Clear Selection
               </button>
               <button
                 type="button"
-                className="rounded-md border border-[#dce6df] px-2 py-1 text-[11px] text-ink-muted hover:bg-[#f5f8f5]"
-                onClick={resetFilters}
+                disabled={!hasLocal}
+                className="rounded-md border border-[#dce6df] px-2.5 py-1 text-[13px] text-ink-muted hover:bg-[#f5f8f5] disabled:cursor-not-allowed disabled:opacity-40"
+                title="Clears page-local filters (exception type / status, stage, cost type) — keeps global filters"
+                onClick={clearLocalFilters}
               >
-                Reset View
+                Clear Local Filters
               </button>
-              <span className="rounded-md bg-lime/30 px-2 py-1 text-[11px] font-semibold text-forest">
-                INDEPENDENT WORK
-              </span>
-              <span className="rounded-md bg-amber-50 px-2 py-1 text-[11px] font-medium text-warning">
-                SYNTHETIC DATA
+              <button
+                type="button"
+                className="rounded-md border border-[#dce6df] px-2.5 py-1 text-[13px] text-ink-muted hover:bg-[#f5f8f5]"
+                title="Restores default date range, clears all filters, selection, scenario and drill-down path"
+                onClick={clearFilters}
+              >
+                Reset All
+              </button>
+              <span
+                className="rounded-md bg-amber-50 px-2 py-1 text-xs font-semibold text-warning"
+                title="Independent work · all data is synthetic"
+              >
+                Synthetic data
               </span>
             </div>
           </div>
@@ -101,7 +119,8 @@ export function AppShell() {
           )}
         </header>
         <GlobalFiltersBar />
-        <main className="flex-1 overflow-auto p-4">
+        <InvestigationBreadcrumb />
+        <main className="flex-1 overflow-auto px-6 py-5">
           <Outlet />
         </main>
       </div>

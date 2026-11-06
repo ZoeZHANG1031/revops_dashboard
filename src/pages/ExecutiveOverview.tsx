@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
+import { Fragment, useDeferredValue, useMemo, useState } from 'react'
 import {
   CartesianGrid,
   Legend,
@@ -9,8 +10,16 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { rollupExceptionsByRootCause } from '@/calc/actionRollup'
-import { buildExecutiveInsight } from '@/calc/executiveInsight'
+import {
+  ACTION_PRIORITY_RULE,
+  actionCategoryTotals,
+  buildActionCenter,
+  groupActionsByRootCause,
+  type ActionGroup,
+  type ActionItem,
+} from '@/calc/actionCenter'
+import { buildTopBusinessIssues } from '@/calc/executiveIssues'
+import { evaluateForecastAccuracy } from '@/calc/forecast'
 import { monthlyRevenueSeries } from '@/calc/kpis'
 import {
   computeDeliveryPerformanceImpact,
@@ -23,137 +32,176 @@ import { FloatingWaterfall } from '@/components/charts/FloatingWaterfall'
 import { ChartCard } from '@/components/common/ChartCard'
 import { Collapsible } from '@/components/common/Collapsible'
 import { DataTable } from '@/components/common/DataTable'
+import { DrilldownLink } from '@/components/common/DrilldownLink'
+import { IssueCard } from '@/components/common/IssueCard'
 import { KpiCard } from '@/components/common/KpiCard'
+import { PageHeader } from '@/components/common/PageHeader'
+import { InfoTip, StatusIndicator } from '@/components/common/StatusIndicator'
 import { useApp } from '@/context/AppContext'
 import { exportToCsv } from '@/lib/export'
+import { PALETTE } from '@/lib/icons'
 import { formatCurrency, formatCurrencyPrecise, formatNumber, formatPercent } from '@/lib/money'
 
+type GroupSort = 'priority' | 'impact' | 'urgency' | 'confidence' | 'owner'
+const CONF_RANK = { High: 3, Medium: 2, Low: 1 } as const
+
 export function ExecutiveOverview() {
-  const { data, filters, scenario, navigateWithContext, openEntityDrawer, navigateToEntity } = useApp()
-  const [bridgeGroup, setBridgeGroup] = useState<'total' | 'customer' | 'region' | 'service' | 'month'>(
-    'total',
-  )
+  const { data, filters, scenario, navigateWithContext, openEntityDrawer, openCustomer360 } = useApp()
+  const [bridgeGroup, setBridgeGroup] = useState<'total' | 'customer' | 'month'>('total')
   const [geoDim, setGeoDim] = useState<'metro' | 'zone' | 'service'>('metro')
-  const [expandedCause, setExpandedCause] = useState<string | null>(null)
+  const [groupSort, setGroupSort] = useState<GroupSort>('priority')
+  const [openGroup, setOpenGroup] = useState<string | null>(null)
 
-  const kpiActions = (kpiId: string, path: string, extras: Parameters<typeof navigateWithContext>[1] = {}) => [
-    {
-      label: 'View Breakdown',
-      onClick: () => navigateWithContext(path, extras),
-    },
-    {
-      label: 'Trace Source',
-      onClick: () =>
-        openEntityDrawer({
-          entityType: 'kpi',
-          entityId: kpiId,
-          label: kpiId,
-          actions: [
-            {
-              label: 'Open related page',
-              onClick: () => navigateWithContext(path, extras),
-            },
-          ],
-        }),
-    },
-    {
-      label: 'Investigate Exceptions',
-      onClick: () =>
-        navigateWithContext('/reconciliation', {
-          exceptionType: extras?.exceptionType ?? null,
-          exceptionStatus: 'Open',
-        }),
-    },
-  ]
-
+  const deferredFilters = useDeferredValue(filters)
   const m = useMemo(() => computeSharedMetrics(data, filters, scenario), [data, filters, scenario])
-  const insight = useMemo(() => buildExecutiveInsight(data, filters, scenario), [data, filters, scenario])
+  const issues = useMemo(() => buildTopBusinessIssues(data, filters, scenario, m), [data, filters, scenario, m])
   const series = useMemo(() => monthlyRevenueSeries(data, filters), [data, filters])
   const bridge = useMemo(
     () => computeVarianceBridge(data, filters, scenario, bridgeGroup),
     [data, filters, scenario, bridgeGroup],
   )
-  const rollups = useMemo(() => rollupExceptionsByRootCause(data, filters), [data, filters])
-  const delivery = useMemo(() => computeDeliveryPerformanceImpact(data, filters), [data, filters])
+  const accuracy = useMemo(() => evaluateForecastAccuracy(data, filters, scenario), [data, filters, scenario])
+  const actions = useMemo(() => buildActionCenter(data, deferredFilters), [data, deferredFilters])
+  const groups = useMemo(() => groupActionsByRootCause(actions), [actions])
+  const classTotals = useMemo(() => actionCategoryTotals(actions), [actions])
+  const delivery = useMemo(() => computeDeliveryPerformanceImpact(data, deferredFilters), [data, deferredFilters])
   const geo = useMemo(
-    () => computeGeographicProfitability(data, filters, geoDim),
-    [data, filters, geoDim],
+    () => computeGeographicProfitability(data, deferredFilters, geoDim),
+    [data, deferredFilters, geoDim],
   )
-  const flow = useMemo(() => computeShipmentToRevenueFlow(data, filters), [data, filters])
-  const expanded = rollups.find((r) => r.rootCauseKey === expandedCause)
+  const flow = useMemo(() => computeShipmentToRevenueFlow(data, deferredFilters), [data, deferredFilters])
+
+  const comparable = m.forecastComparable
+  const varPct =
+    !comparable || m.forecastExisting === 0 ? null : (m.forecastVarianceExisting / Math.abs(m.forecastExisting)) * 100
+  const forecastStatus = !comparable
+    ? 'Not comparable'
+    : varPct == null
+      ? 'Insufficient baseline'
+      : varPct >= 0
+        ? 'On Track / Ahead'
+        : varPct > -5
+          ? 'Watch'
+          : 'Behind'
+
+  // Driver attribution quality — separate from forecast accuracy
+  const residual = bridge.items.find((i) => i.key === 'other')?.amount ?? 0
+  const componentAbs = bridge.items
+    .filter((i) => i.key !== 'forecast' && i.key !== 'actual')
+    .reduce((a, i) => a + Math.abs(i.amount), 0)
+  const residualShare = componentAbs === 0 ? null : (Math.abs(residual) / componentAbs) * 100
+  const attributionQuality = residualShare == null ? null : Math.max(0, 100 - residualShare)
+  const residualPctOfForecast = bridge.forecast === 0 ? null : (residual / Math.abs(bridge.forecast)) * 100
+  const bridgeUi = bridge.items.map((i) =>
+    i.key === 'other' ? { ...i, label: 'Unexplained Residual' } : i,
+  )
+
+  const sortedGroups = useMemo(() => {
+    const g = [...groups]
+    const by: Record<GroupSort, (a: ActionGroup, b: ActionGroup) => number> = {
+      priority: (a, b) => b.priorityScore - a.priorityScore || b.impact - a.impact,
+      impact: (a, b) => b.impact - a.impact,
+      urgency: (a, b) => b.urgency - a.urgency || b.impact - a.impact,
+      confidence: (a, b) => CONF_RANK[b.confidence] - CONF_RANK[a.confidence] || b.impact - a.impact,
+      owner: (a, b) => a.owner.localeCompare(b.owner) || b.impact - a.impact,
+    }
+    return g.sort(by[groupSort])
+  }, [groups, groupSort])
+
+  // ---- Computed insights (current filters; no hard-coded conclusions) ----
+  const lastPt = series[series.length - 1]
+  const trendInsight = !comparable
+    ? m.forecastComparableReason
+    : lastPt && lastPt.forecast
+      ? `${lastPt.label}: actual ${formatCurrency(lastPt.recognized, true)} vs Existing forecast ${formatCurrency(lastPt.forecast, true)} (${lastPt.recognized >= lastPt.forecast ? '+' : ''}${formatPercent(((lastPt.recognized - lastPt.forecast) / Math.abs(lastPt.forecast)) * 100)}). Period total ${forecastStatus.toLowerCase()}.`
+      : null
+  const drivers = bridge.items.filter((i) => !['forecast', 'actual', 'other'].includes(i.key))
+  const topDriver = [...drivers].sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))[0]
+  const bridgeInsight =
+    comparable && topDriver
+      ? `Largest known driver: ${topDriver.label} (${topDriver.amount >= 0 ? '+' : '−'}${formatCurrency(Math.abs(topDriver.amount), true)}); unexplained residual ${formatCurrency(residual, true)} = ${residualShare == null ? 'N/A' : `${residualShare.toFixed(0)}%`} of driver movement.`
+      : null
+  const topGroup = sortedGroups[0]
+  const actionInsight = topGroup
+    ? `Start with ${topGroup.rootCause}: ${formatNumber(topGroup.cases)} open case${topGroup.cases === 1 ? '' : 's'}, ${formatCurrency(topGroup.impact, true)} ${topGroup.category.toLowerCase()}, suggested owner ${topGroup.owner}.`
+    : null
+
+  const drillItem = (r: ActionItem) => {
+    if (r.category === 'Customer Revenue Risk' && r.customerId) {
+      openCustomer360(r.customerId)
+      return
+    }
+    if (r.category === 'Margin Pressure') {
+      navigateWithContext('/unit-economics', { sourcePage: '/executive' })
+      return
+    }
+    navigateWithContext('/reconciliation', {
+      exceptionType: r.sourceException?.exception_type ?? null,
+      exceptionStatus: null,
+      openEntity: r.sourceException
+        ? { entityType: 'exception', entityId: r.sourceException.exception_id, label: r.title }
+        : null,
+      sourcePage: '/executive',
+    })
+  }
+  const drillGroup = (g: ActionGroup) => {
+    if (g.category === 'Margin Pressure') return navigateWithContext('/unit-economics', { sourcePage: '/executive' })
+    if (g.category === 'Customer Revenue Risk') return navigateWithContext('/customers', { sourcePage: '/executive' })
+    navigateWithContext('/reconciliation', {
+      exceptionType: g.items[0]?.sourceException?.exception_type ?? null,
+      exceptionStatus: 'Open',
+      sourcePage: '/executive',
+    })
+  }
+
+  const kpiActions = (kpiId: string, path: string, extras: Parameters<typeof navigateWithContext>[1] = {}) => [
+    { label: 'View breakdown', onClick: () => navigateWithContext(path, { ...extras, sourcePage: '/executive' }) },
+    {
+      label: 'Trace source',
+      onClick: () => openEntityDrawer({ entityType: 'kpi', entityId: kpiId, label: kpiId }),
+    },
+  ]
+
+  const EXPOSURE_NOTES: Record<string, string> = {
+    'Recoverable Billing Exposure': 'Open under-billing that could be re-billed (unconfirmed)',
+    'Collections Exposure': 'Overdue invoices — cash timing, not revenue loss',
+    'Customer Revenue Risk': 'Scenario forward risk — not booked',
+    'Billing Correction': 'Duplicate billing — refund risk, not revenue',
+    'Margin Pressure': 'Contribution shortfall signal',
+  }
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-brand-600">
-            Revenue Intelligence Platform · Independent Synthetic Demo
-          </p>
-          <h2 className="text-lg font-semibold text-ink">Executive Revenue Command Center</h2>
-        </div>
-        <button
-          type="button"
-          className="rounded-lg bg-forest px-3 py-1.5 text-xs font-medium text-white hover:bg-forest-muted"
-          onClick={() =>
-            exportToCsv('revenue_summary.csv', [
-              {
-                ...m,
-                start: filters.startPeriod,
-                end: filters.endPeriod,
-                scenario,
-              },
-            ])
-          }
-        >
-          Export Summary
-        </button>
-      </div>
-
-      {/* Compact Executive Decision Brief */}
-      <section className="insight-hero px-4 py-3 shadow-sm">
-        <div className="flex flex-wrap items-start justify-between gap-2">
-          <div className="min-w-0 flex-1">
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-lime">
-              Executive Decision Brief
-            </p>
-            <h3 className="mt-0.5 text-base font-semibold leading-snug text-white">{insight.headline}</h3>
-          </div>
-          <span
-            className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-              insight.severity === 'critical'
-                ? 'bg-red-500/20 text-red-100'
-                : insight.severity === 'watch'
-                  ? 'bg-amber-400/20 text-amber-100'
-                  : 'bg-lime/20 text-lime'
-            }`}
+    <div className="space-y-5">
+      <PageHeader
+        path="/executive"
+        title="Executive Revenue Command Center"
+        scope={`${filters.startPeriod} → ${filters.endPeriod} · ${scenario}`}
+        actions={
+          <button
+            type="button"
+            className="rounded-lg bg-forest px-3 py-1.5 text-xs font-medium text-white hover:bg-forest-muted"
+            onClick={() =>
+              exportToCsv('revenue_summary.csv', [{ ...m, start: filters.startPeriod, end: filters.endPeriod, scenario }])
+            }
           >
-            {insight.severity.toUpperCase()}
-          </span>
-        </div>
-        <div className="mt-2 grid gap-2 md:grid-cols-3">
-          {insight.signals.map((s) => (
-            <p key={s} className="rounded-lg bg-black/15 px-2.5 py-1.5 text-[11px] text-white/90">
-              {s}
-            </p>
-          ))}
-        </div>
-        <ol className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-lime-soft list-decimal pl-4">
-          {insight.recommendedActions.map((a) => (
-            <li key={a} className="max-w-md">
-              {a}
-            </li>
-          ))}
-        </ol>
-      </section>
+            Export Summary
+          </button>
+        }
+      />
 
-      {/* Primary KPIs */}
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      {/* Level 1 — three headline KPIs */}
+      <section className="grid gap-4 md:grid-cols-3">
         <KpiCard
           kpiId="recognized_revenue"
           value={m.recognizedRevenue}
           size="primary"
+          absoluteChange={comparable ? m.forecastVarianceExisting : null}
+          priorDelta={varPct}
+          baselineLabel={comparable ? 'vs Existing Customer Forecast' : undefined}
+          statusLabel={forecastStatus}
+          sparkline={series.map((s) => s.recognized)}
           actions={kpiActions('recognized_revenue', '/lifecycle')}
-          scopeNote="Recognition accounting_period"
+          scopeNote={comparable ? undefined : m.forecastComparableReason ?? undefined}
         />
         <KpiCard
           kpiId="contribution_margin"
@@ -161,7 +209,9 @@ export function ExecutiveOverview() {
           format="percent"
           size="primary"
           levelThresholds={{ good: 28, warn: 22 }}
+          statusLabel={(m.contributionMargin ?? 0) >= 28 ? 'Healthy' : (m.contributionMargin ?? 0) >= 22 ? 'Watch' : 'Pressure'}
           actions={kpiActions('contribution_margin', '/unit-economics')}
+          scopeNote={`Contribution ${formatCurrency(m.contributionProfit, true)} · ≠ Operating Profit`}
         />
         <KpiCard
           kpiId="open_recoverable_leakage"
@@ -169,301 +219,393 @@ export function ExecutiveOverview() {
           size="primary"
           polarity="lower_better"
           levelThresholds={{ good: 500, warn: 2000 }}
-          actions={kpiActions('open_recoverable_leakage', '/reconciliation', {
-            exceptionStatus: 'Open',
-          })}
-          scopeNote="Open / Investigating recoverable types only"
+          statusLabel={m.openRecoverableLeakage > 2000 ? 'Act' : m.openRecoverableLeakage > 500 ? 'Watch' : 'Low'}
+          actions={kpiActions('open_recoverable_leakage', '/reconciliation', { exceptionStatus: 'Open' })}
+          scopeNote="Open / investigating recoverable types · unconfirmed"
         />
-        <KpiCard
-          kpiId="forecast_variance_existing"
-          value={m.forecastVarianceExisting}
-          size="primary"
-          actions={kpiActions('forecast_variance_existing', '/forecasting')}
-          scopeNote="Existing customers — not Total Business Forecast"
-        />
-        <KpiCard
-          kpiId="overdue_ar"
-          value={m.overdueAr}
-          size="primary"
-          polarity="lower_better"
-          levelThresholds={{ good: 1000, warn: 5000 }}
-          actions={kpiActions('overdue_ar', '/reconciliation', { exceptionType: 'Overdue AR' })}
-          scopeNote="Collections exposure ≠ booked revenue loss"
-        />
-        <KpiCard
-          kpiId="contribution_profit"
-          value={m.contributionProfit}
-          size="primary"
-          actions={kpiActions('contribution_profit', '/unit-economics')}
-        />
-      </div>
+      </section>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-        <KpiCard
-          kpiId="net_billed_revenue"
-          value={m.netBilledRevenue}
-          actions={kpiActions('net_billed_revenue', '/reconciliation')}
+      {/* Secondary summary */}
+      <section className="grid gap-3 text-[13px] sm:grid-cols-3 xl:grid-cols-6">
+        <SummaryChip
+          label="Forecast Variance"
+          value={comparable ? formatCurrency(m.forecastVarianceExisting, true) : 'N/A'}
+          note={comparable ? `${formatPercent(varPct)} vs Existing` : 'Not comparable'}
+          tip={comparable ? (m.forecastComparableNote ?? 'Comparable actual − Existing Customer Forecast') : (m.forecastComparableReason ?? '')}
+          onClick={() => navigateWithContext('/forecasting', { sourcePage: '/executive' })}
         />
-        <KpiCard
-          kpiId="unbilled_exposure"
-          value={m.unbilledExposure}
-          polarity="lower_better"
-          levelThresholds={{ good: 500, warn: 3000 }}
-          actions={kpiActions('unbilled_exposure', '/reconciliation', {
-            exceptionType: 'Missing Billing',
-            exceptionStatus: 'Open',
-          })}
+        <SummaryChip
+          label="Overdue AR"
+          value={formatCurrency(m.overdueAr, true)}
+          note="Collections ≠ revenue loss"
+          tip="Σ net of invoices with status Overdue in scope"
+          onClick={() => navigateWithContext('/reconciliation', { exceptionType: 'Overdue AR', exceptionStatus: 'Open', sourcePage: '/executive' })}
         />
-        <KpiCard
-          kpiId="scenario_revenue_at_risk"
-          value={m.scenarioRevenueAtRisk}
-          polarity="lower_better"
-          actions={kpiActions('scenario_revenue_at_risk', '/customers')}
-          scopeNote="Scenario assumption — not calibrated churn"
+        <SummaryChip
+          label="Billing Accuracy"
+          value={formatPercent(m.billingAccuracy)}
+          note="Billed ÷ billable"
+          tip="Distinct billed shipments ÷ billable shipments"
+          onClick={() => navigateWithContext('/lifecycle', { sourcePage: '/executive' })}
         />
-        <KpiCard
-          kpiId="cash_collections"
-          value={m.cashCollections}
-          actions={kpiActions('cash_collections', '/reconciliation')}
-          scopeNote="Cash ≠ recognized revenue"
-        />
-        <KpiCard
-          kpiId="billing_accuracy"
-          value={m.billingAccuracy ?? 0}
-          format="percent"
-          levelThresholds={{ good: 98, warn: 95 }}
-          actions={kpiActions('billing_accuracy', '/reconciliation')}
-        />
-      </div>
+        <SummaryChip label="Net Billing" value={formatCurrency(m.netBilledRevenue, true)} note="Billing period" tip="Σ billing_line.net_amount (non-duplicate)" />
+        <SummaryChip label="Cash Collections" value={formatCurrency(m.cashCollections, true)} note="≠ Recognized" tip="Σ payments by payment_date" />
+        <SummaryChip label="Contribution Profit" value={formatCurrency(m.contributionProfit, true)} note="Before fixed" tip="Net Billing − variable cost" />
+      </section>
 
-      <div className="grid gap-2 sm:grid-cols-4 text-[11px]">
-        <Chip label="Bookings TCV" value={formatCurrency(m.bookingsTcv, true)} note="≠ revenue" />
-        <Chip label="Existing Forecast" value={formatCurrency(m.forecastExisting, true)} note="backtest anchor" />
-        <Chip label="Pipeline Forecast" value={formatCurrency(m.forecastPipeline, true)} note="not in Actual" />
-        <Chip label="Total Business Forecast" value={formatCurrency(m.forecastTotal, true)} note="Existing+Pipeline" />
-      </div>
+      {/* Top Business Issues — Critical → Watch → Healthy */}
+      <section>
+        <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+          Top Business Issues · ordered by severity
+        </p>
+        <div className="grid gap-2 md:grid-cols-3">
+          {issues.map((issue) => (
+            <IssueCard
+              key={issue.id}
+              title={issue.title}
+              severity={issue.severity}
+              financialImpact={issue.financialImpact}
+              evidence={issue.evidence}
+              suggestedOwner={issue.suggestedOwner}
+              recommendedAction={issue.recommendedAction}
+              impactNote={issue.impactNote}
+              drillLabel={issue.navigate.path === '/forecasting' ? 'Open Forecasting' : 'Open Reconciliation'}
+              onInvestigate={() =>
+                navigateWithContext(issue.navigate.path, {
+                  ...issue.navigate.extras,
+                  sourcePage: '/executive',
+                  toast: issue.recommendedAction,
+                })
+              }
+            />
+          ))}
+        </div>
+      </section>
 
-      <div className="grid gap-3 lg:grid-cols-2">
+      {/* Level 2 — Revenue vs forecast + variance bridge */}
+      <div className="grid gap-4 lg:grid-cols-2">
         <ChartCard
-          title="Actual Recognized vs Existing Customer Forecast"
-          businessQuestion="Are we tracking the Existing plan (not Total Business Forecast)?"
-          formula="Recognized header vs Existing forecast_recognized"
+          icon="forecast"
+          iconTone="forecast"
+          title="Actual vs Existing Customer Forecast"
+          emphasis
+          insight={trendInsight}
+          businessQuestion="Are we tracking the Existing-customer plan?"
+          formula="Recognized (recognition period) vs Existing forecast_recognized"
           source="fact_revenue_recognition, fact_forecast (Existing)"
           timeBasis={`${filters.startPeriod} → ${filters.endPeriod}`}
         >
-          <div className="h-52">
+          {!comparable && (
+            <p className="mb-2 rounded-lg bg-amber-50 px-3 py-1.5 text-[13px] text-amber-900">{m.forecastComparableReason}</p>
+          )}
+          <div className="mb-2 flex flex-wrap gap-2 text-[13px]">
+            <Pill label="Actual" value={formatCurrency(m.recognizedRevenue, true)} />
+            <Pill label="Existing Fcst" value={formatCurrency(m.forecastExisting, true)} />
+            <Pill label="Variance" value={comparable ? `${formatCurrency(m.forecastVarianceExisting, true)} (${formatPercent(varPct)})` : 'N/A'} strong />
+            <Pill
+              label="Accuracy"
+              value={comparable && accuracy.wape != null ? `WAPE ${formatPercent(accuracy.wape)}` : 'N/A'}
+              tip="WAPE = Σ|Actual − Forecast| ÷ Σ|Actual| on months with an Existing forecast"
+            />
+          </div>
+          <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={series}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#dce6df" />
-                <XAxis dataKey="label" tick={{ fontSize: 10 }} />
-                <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
-                <Tooltip formatter={(v) => formatCurrency(Number(v))} />
-                <Legend />
-                <Line type="monotone" dataKey="recognized" name="Actual Recognized" stroke="#123C35" strokeWidth={2.5} dot={false} />
-                <Line type="monotone" dataKey="forecast" name="Existing Forecast" stroke="#E58A2B" strokeWidth={2} strokeDasharray="5 4" dot={false} />
-                <Line type="monotone" dataKey="billed" name="Net Billings" stroke="#00A86B" strokeWidth={1.5} dot={false} />
+              <LineChart data={series} margin={{ top: 6, right: 12, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={PALETTE.grid} />
+                <XAxis dataKey="label" tick={{ fontSize: 12 }} />
+                <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
+                <Tooltip formatter={(v) => formatCurrencyPrecise(Number(v))} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Line isAnimationActive={false} type="monotone" dataKey="recognized" name="Actual Recognized" stroke={PALETTE.brand} strokeWidth={2.5} dot={false} />
+                {comparable && (
+                  <Line isAnimationActive={false} type="monotone" dataKey="forecast" name="Existing Forecast" stroke={PALETTE.forecast} strokeWidth={2} strokeDasharray="5 4" dot={false} />
+                )}
               </LineChart>
             </ResponsiveContainer>
           </div>
+          <p className="mt-1 text-xs text-ink-muted">
+            Pipeline {formatCurrency(m.forecastPipeline, true)} · Total Business {formatCurrency(m.forecastTotal, true)} — not in this
+            variance (no comparable actual).
+          </p>
         </ChartCard>
 
         <ChartCard
-          title="Revenue Variance Bridge (vs Existing Forecast)"
-          subtitle={`Σ ${formatCurrencyPrecise(bridge.checkSum)} = Actual − Existing Forecast ${formatCurrencyPrecise(bridge.actual - bridge.forecast)}`}
-          businessQuestion="What drove beat/miss vs Existing plan?"
-          formula="Volume+Price+Mix+Credits+Other = Actual−Existing Forecast"
+          icon="forecast"
+          iconTone="forecast"
+          title="Forecast Variance Bridge"
+          emphasis
+          insight={bridgeInsight}
+          businessQuestion="Which known drivers explain the gap — and how much is unexplained?"
+          formula="Forecast + Volume + Price + Mix + Credits + Residual = Comparable Actual"
           source="computeVarianceBridge"
-          timeBasis={`${filters.startPeriod} → ${filters.endPeriod}`}
           action={
-            <select
-              className="filter-input"
-              value={bridgeGroup}
-              onChange={(e) => setBridgeGroup(e.target.value as typeof bridgeGroup)}
-            >
+            <select className="filter-input" value={bridgeGroup} onChange={(e) => setBridgeGroup(e.target.value as typeof bridgeGroup)} aria-label="Bridge grouping">
               <option value="total">Company</option>
               <option value="customer">By Customer</option>
-              <option value="region">By Region</option>
-              <option value="service">By Service</option>
               <option value="month">By Month</option>
             </select>
           }
         >
-          <FloatingWaterfall steps={bridge.items} height={240} />
+          {!comparable ? (
+            <p className="rounded-lg border border-dashed border-slate-200 px-3 py-10 text-center text-xs text-ink-muted">
+              {m.forecastComparableReason}
+            </p>
+          ) : (
+            <>
+              <div className="mb-2 flex flex-wrap gap-2 text-[13px]">
+                <Pill label="Residual" value={`${formatCurrency(residual, true)} (${formatPercent(residualPctOfForecast)} of fcst)`} />
+                <Pill
+                  label="Attribution quality"
+                  value={attributionQuality == null ? 'N/A' : formatPercent(attributionQuality)}
+                  tip="100 − |Residual| ÷ Σ|bridge components|. Separate from forecast accuracy."
+                  strong
+                />
+              </div>
+              {residualShare != null && residualShare > 30 && (
+                <p className="mb-2 rounded-lg bg-amber-50 px-3 py-1.5 text-[13px] text-amber-900">
+                  Unexplained residual is {residualShare.toFixed(0)}% of driver movement — treat the driver split as indicative only.
+                </p>
+              )}
+              <FloatingWaterfall steps={bridgeUi} height={250} />
+            </>
+          )}
         </ChartCard>
       </div>
 
-      <div className="grid gap-3 lg:grid-cols-3">
-        <ChartCard title="Delivery → Revenue Impact" businessQuestion="How do failures hit credits, claims, retention?">
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            <Mini label="OTD" value={formatPercent(delivery.otdRate)} />
-            <Mini label="First Attempt" value={formatPercent(delivery.firstAttemptSuccess)} />
-            <Mini label="Failed" value={formatPercent(delivery.failedDeliveryRate)} warn />
-            <Mini label="Claims Cost" value={formatCurrency(delivery.claimsCost, true)} warn />
-          </div>
-          <ul className="mt-2 list-disc pl-4 text-[11px] text-ink-muted">
-            {delivery.explanation.slice(0, 3).map((e) => (
-              <li key={e}>{e}</li>
-            ))}
-          </ul>
-        </ChartCard>
-        <ChartCard title="Shipment → Revenue Flow" businessQuestion="Physical vs commercial drop-offs?">
-          <ol className="space-y-1 text-xs">
-            {flow.stages.map((s) => (
-              <li key={s.key} className="flex justify-between rounded bg-[#f5f8f5] px-2 py-1">
-                <span>
-                  {s.label} <span className="text-[10px] text-ink-muted">{s.kind}</span>
-                </span>
-                <span className="font-mono">{formatNumber(s.count)}</span>
-              </li>
-            ))}
-          </ol>
-        </ChartCard>
-        <ChartCard
-          title="Geographic Profitability"
-          action={
-            <select className="filter-input" value={geoDim} onChange={(e) => setGeoDim(e.target.value as typeof geoDim)}>
-              <option value="metro">Metro</option>
-              <option value="zone">Zone</option>
-              <option value="service">Service</option>
-            </select>
-          }
-        >
-          <DataTable
-            rows={geo.slice(0, 6).map((g) => ({ ...g, id: g.key }))}
-            rowKey={(r) => r.key}
-            onRowClick={(r) =>
-              navigateWithContext('/unit-economics', {
-                region: geoDim === 'service' ? null : r.label.includes(' ') ? null : r.label,
-              })
-            }
-            columns={[
-              { key: 'l', header: geoDim, render: (r) => r.label },
-              { key: 'rev', header: 'Rev', align: 'right', render: (r) => formatCurrency(r.revenue, true) },
-              { key: 'cm', header: 'CM%', align: 'right', render: (r) => formatPercent(r.contributionMargin) },
-            ]}
-          />
-        </ChartCard>
-      </div>
+      {/* Exposure classes — never added together */}
+      <section>
+        <div className="mb-1.5 flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+          Exposure by class <InfoTip text="Each class has a different meaning (re-billable revenue, cash timing, forward risk, refund risk). They are shown side by side and never summed into one revenue-loss number." />
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          {classTotals.map((c) => (
+            <div key={c.category} className="rounded-lg border border-[#dce6df] bg-white px-3 py-2">
+              <p className="text-xs font-semibold uppercase text-ink-muted">{c.category}</p>
+              <p className="font-mono text-sm font-semibold text-ink">{formatCurrency(c.impact, true)}</p>
+              <p className="text-xs text-ink-muted">
+                {formatNumber(c.count)} items · {EXPOSURE_NOTES[c.category]}
+              </p>
+            </div>
+          ))}
+        </div>
+      </section>
 
-      {/* Action Center — root cause rollup */}
+      {/* Action Priority — aggregated by root cause */}
       <ChartCard
-        title="Action Center — by Root Cause"
-        subtitle="Priority = actionability × open exposure × severity × age. Overdue AR ≠ booked revenue loss. Duplicates ≠ recoverable revenue."
+        icon="actions"
+        title="Action Priority"
+        emphasis
+        insight={actionInsight}
+        formula={ACTION_PRIORITY_RULE}
+        subtitle="Grouped by root cause · owners are suggested, not assigned · click a row to expand its records"
         businessQuestion="What should Billing / Finance / Sales do this week?"
         action={
-          <button
-            type="button"
-            className="text-xs text-brand-700"
-            onClick={() => exportToCsv('action_rollup.csv', rollups.map(({ exceptions, ...r }) => r))}
-          >
-            Export
-          </button>
+          <label className="flex items-center gap-1 text-[13px] text-ink-muted">
+            Sort
+            <select className="filter-input" value={groupSort} onChange={(e) => setGroupSort(e.target.value as GroupSort)}>
+              <option value="priority">Priority</option>
+              <option value="impact">Impact</option>
+              <option value="urgency">Urgency</option>
+              <option value="confidence">Confidence</option>
+              <option value="owner">Owner</option>
+            </select>
+          </label>
         }
       >
-        <DataTable
-          rows={rollups.map((r) => ({ ...r, id: r.rootCauseKey }))}
-          rowKey={(r) => r.rootCauseKey}
-          onRowClick={(r) => setExpandedCause(expandedCause === r.rootCauseKey ? null : r.rootCauseKey)}
-          columns={[
-            { key: 'type', header: 'Root Cause / Type', render: (r) => r.exceptionType },
-            { key: 'cases', header: 'Cases', align: 'right', render: (r) => formatNumber(r.cases), sortValue: (r) => r.cases },
-            {
-              key: 'open',
-              header: 'Open Exposure',
-              align: 'right',
-              render: (r) => formatCurrencyPrecise(r.openExposure),
-              sortValue: (r) => r.openExposure,
-            },
-            {
-              key: 'rec',
-              header: 'Recoverable',
-              align: 'right',
-              render: (r) => formatCurrencyPrecise(r.recoverable),
-              sortValue: (r) => r.recoverable,
-            },
-            { key: 'sev', header: 'Severity', render: (r) => r.severity },
-            { key: 'owner', header: 'Owner', render: (r) => r.owner },
-            { key: 'age', header: 'Avg Age (d)', align: 'right', render: (r) => String(r.avgAgeDays) },
-            { key: 'act', header: 'Action', render: (r) => r.action },
-          ]}
-        />
-        {expanded && (
-          <div className="mt-3 rounded-lg border border-[#dce6df] bg-[#f5f8f5] p-3">
-            <p className="text-xs font-semibold text-ink">
-              {expanded.exceptionType} detail · {expanded.recoverability}
-            </p>
-            <DataTable
-              rows={expanded.exceptions.slice(0, 25).map((e) => ({ ...e, id: e.exception_id }))}
-              rowKey={(r) => r.exception_id}
-              onRowClick={(r) => {
-                navigateToEntity('exception', r.exception_id, r.exception_type)
-                navigateWithContext('/reconciliation', {
-                  exceptionType: r.exception_type,
-                  exceptionStatus: r.status,
-                  customerId: r.customer_id,
-                  openEntity: {
-                    entityType: 'exception',
-                    entityId: r.exception_id,
-                    label: r.exception_type,
-                  },
-                })
-              }}
-              columns={[
-                { key: 'id', header: 'Exception', render: (r) => r.exception_id },
-                { key: 'cust', header: 'Customer', render: (r) => r.customer_id ?? '—' },
-                { key: 'ship', header: 'Shipment', render: (r) => r.shipment_id ?? '—' },
-                {
-                  key: 'imp',
-                  header: 'Impact',
-                  align: 'right',
-                  render: (r) => formatCurrencyPrecise(r.financial_impact),
-                },
-                { key: 'st', header: 'Status', render: (r) => r.status },
-                { key: 'rule', header: 'Trigger', render: (r) => <span className="font-mono text-[10px]">{r.trigger_rule}</span> },
-              ]}
-            />
+        {sortedGroups.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-slate-200 px-3 py-8 text-center text-xs text-ink-muted">No actions in scope</p>
+        ) : (
+          <div className="overflow-auto rounded-lg border border-slate-200">
+            <table className="min-w-full text-left text-[13px]">
+              <thead className="bg-[#f7faf8] text-xs font-semibold uppercase tracking-wide text-ink-muted">
+                <tr>
+                  <th className="px-2 py-2" />
+                  <th className="px-2 py-2">Issue (root cause)</th>
+                  <th className="px-2 py-2">Exposure class</th>
+                  <th className="px-2 py-2 text-right">Cases</th>
+                  <th className="px-2 py-2 text-right">Impact</th>
+                  <th className="px-2 py-2">Urgency</th>
+                  <th className="px-2 py-2">Confidence</th>
+                  <th className="px-2 py-2">Suggested owner</th>
+                  <th className="px-2 py-2">Recommended action</th>
+                  <th className="px-2 py-2 text-right">Priority</th>
+                  <th className="px-2 py-2" />
+                </tr>
+              </thead>
+              <tbody>
+                {sortedGroups.slice(0, 10).map((g) => {
+                  const open = openGroup === g.key
+                  return (
+                    <Fragment key={g.key}>
+                      <tr
+                        className={`cursor-pointer border-t border-slate-100 hover:bg-brand-50/50 ${open ? 'bg-brand-50' : ''}`}
+                        onClick={() => setOpenGroup(open ? null : g.key)}
+                        aria-expanded={open}
+                      >
+                        <td className="px-2 py-2 text-ink-muted">{open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</td>
+                        <td className="px-2 py-2.5 text-sm font-semibold text-ink">{g.rootCause}</td>
+                        <td className="px-2 py-2 text-ink-muted">{g.category}</td>
+                        <td className="px-2 py-2 text-right font-mono">{formatNumber(g.cases)}</td>
+                        <td className="px-2 py-2.5 text-right font-mono text-sm font-semibold" title={formatCurrencyPrecise(g.impact)}>{formatCurrency(g.impact, true)}</td>
+                        <td className="px-2 py-2">
+                          <StatusIndicator tone={g.urgency === 3 ? 'critical' : g.urgency === 2 ? 'watch' : 'neutral'} label={g.urgency === 3 ? 'High' : g.urgency === 2 ? 'Medium' : 'Low'} />
+                        </td>
+                        <td className="px-2 py-2">{g.confidence}</td>
+                        <td className="px-2 py-2">{g.owner}</td>
+                        <td className="px-2 py-2 text-ink-muted">{g.recommendedAction}</td>
+                        <td className="px-2 py-2 text-right font-mono font-semibold">{g.priorityScore}/12</td>
+                        <td className="px-2 py-2">
+                          <DrilldownLink
+                            to={g.category === 'Margin Pressure' ? '/unit-economics' : g.category === 'Customer Revenue Risk' ? '/customers' : '/reconciliation'}
+                            label="Open"
+                            onClick={() => drillGroup(g)}
+                          />
+                        </td>
+                      </tr>
+                      {open && (
+                        <tr className="bg-[#f7faf8]">
+                          <td colSpan={11} className="px-3 py-2">
+                            <DataTable
+                              rows={g.items.slice(0, 20).map((i) => ({ ...i, id: i.id }))}
+                              rowKey={(r) => r.id}
+                              onRowClick={drillItem}
+                              columns={[
+                                { key: 'id', header: 'Record', render: (r) => r.sourceException?.exception_id ?? r.id },
+                                { key: 't', header: 'Detail', render: (r) => r.title },
+                                {
+                                  key: 'c',
+                                  header: 'Customer',
+                                  render: (r) =>
+                                    r.customerId ? (data.customers.find((c) => c.customer_id === r.customerId)?.customer_name ?? r.customerId) : '—',
+                                },
+                                { key: 'st', header: 'Status', render: (r) => r.status },
+                                { key: 'sev', header: 'Severity', render: (r) => r.severity },
+                                { key: 'imp', header: 'Impact', align: 'right', render: (r) => formatCurrencyPrecise(r.financialImpact), sortValue: (r) => r.financialImpact },
+                              ]}
+                            />
+                            {g.items.length > 20 && (
+                              <p className="mt-1 text-xs text-ink-muted">Showing 20 of {g.items.length} — open the destination page for all records.</p>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  )
+                })}
+              </tbody>
+            </table>
           </div>
         )}
       </ChartCard>
 
-      <Collapsible title="Exposure definition legend" subtitle="Why Action Center ≠ Unbilled ≠ Scenario RaR">
-        <ul className="space-y-1 text-xs text-ink-muted">
-          <li>
-            <strong className="text-ink">Open Recoverable Leakage:</strong> Missing Billing / Rate Mismatch /
-            Missing Surcharge still Open or Investigating.
-          </li>
-          <li>
-            <strong className="text-ink">Unbilled Exposure:</strong> Missing-billing expected amounts (may include
-            resolved depending on filter exceptions list) — see metric registry.
-          </li>
-          <li>
-            <strong className="text-ink">Scenario Revenue at Risk:</strong> Forward revenue × assumed loss from
-            health bands — not confirmed loss / not churn model.
-          </li>
-          <li>
-            <strong className="text-ink">Overdue AR:</strong> Collections exposure only.
-          </li>
-        </ul>
+      {/* Level 3 — operational context (collapsed) */}
+      <Collapsible title="Operational context" subtitle="Delivery impact · shipment → revenue flow · geographic profitability">
+        <div className="grid gap-4 lg:grid-cols-3">
+          <ChartCard icon="delivery" title="Delivery → Revenue Impact" businessQuestion="How do failures hit credits & claims?">
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <Mini label="On-time" value={formatPercent(delivery.otdRate)} />
+              <Mini label="First attempt" value={formatPercent(delivery.firstAttemptSuccess)} />
+              <Mini label="Failed" value={formatPercent(delivery.failedDeliveryRate)} />
+              <Mini label="Claims cost" value={formatCurrency(delivery.claimsCost, true)} />
+            </div>
+          </ChartCard>
+          <ChartCard icon="shipments" title="Shipment → Revenue Flow" businessQuestion="Physical vs commercial drop-offs?">
+            <ol className="space-y-1 text-xs">
+              {flow.stages.map((s) => (
+                <li key={s.key} className="flex justify-between rounded bg-[#f5f8f5] px-2 py-1">
+                  <span>
+                    {s.label} <span className="text-xs text-ink-muted">{s.kind}</span>
+                  </span>
+                  <span className="font-mono">{formatNumber(s.count)}</span>
+                </li>
+              ))}
+            </ol>
+          </ChartCard>
+          <ChartCard
+            icon="geography"
+            title="Geographic Profitability"
+            action={
+              <select className="filter-input" value={geoDim} onChange={(e) => setGeoDim(e.target.value as typeof geoDim)} aria-label="Geo dimension">
+                <option value="metro">Metro</option>
+                <option value="zone">Zone</option>
+                <option value="service">Service</option>
+              </select>
+            }
+          >
+            <DataTable
+              rows={geo.slice(0, 6).map((g) => ({ ...g, id: g.key }))}
+              rowKey={(r) => r.key}
+              onRowClick={(r) =>
+                navigateWithContext('/unit-economics', {
+                  metro: geoDim === 'metro' ? r.label : undefined,
+                  serviceType: geoDim === 'service' ? (r.label as 'Standard') : undefined,
+                  sourcePage: '/executive',
+                })
+              }
+              columns={[
+                { key: 'l', header: geoDim, render: (r) => r.label },
+                { key: 'rev', header: 'Rev', align: 'right', render: (r) => formatCurrency(r.revenue, true) },
+                { key: 'cm', header: 'CM%', align: 'right', render: (r) => formatPercent(r.contributionMargin) },
+              ]}
+            />
+          </ChartCard>
+        </div>
       </Collapsible>
     </div>
   )
 }
 
-function Chip({ label, value, note }: { label: string; value: string; note: string }) {
-  return (
-    <div className="card-surface px-3 py-2">
-      <p className="text-[10px] font-semibold uppercase text-ink-muted">{label}</p>
-      <p className="font-mono text-sm font-semibold">{value}</p>
-      <p className="text-[10px] text-ink-muted">{note}</p>
-    </div>
+function SummaryChip({
+  label,
+  value,
+  note,
+  tip,
+  onClick,
+}: {
+  label: string
+  value: string
+  note: string
+  tip?: string
+  onClick?: () => void
+}) {
+  const body = (
+    <>
+      <p className="flex items-center text-xs font-semibold uppercase text-ink-muted">
+        {label}
+        {tip && <InfoTip text={tip} />}
+      </p>
+      <p className="font-mono text-sm font-semibold text-ink">{value}</p>
+      <p className="text-xs text-ink-muted">{note}</p>
+    </>
+  )
+  return onClick ? (
+    <button
+      type="button"
+      onClick={onClick}
+      className="rounded-lg border border-[#dce6df] bg-white px-2.5 py-1.5 text-left transition-colors hover:border-brand-400 hover:bg-brand-50"
+    >
+      {body}
+    </button>
+  ) : (
+    <div className="rounded-lg border border-[#dce6df] bg-white px-2.5 py-1.5">{body}</div>
   )
 }
 
-function Mini({ label, value, warn }: { label: string; value: string; warn?: boolean }) {
+function Pill({ label, value, strong, tip }: { label: string; value: string; strong?: boolean; tip?: string }) {
+  return (
+    <span className={`inline-flex items-center rounded bg-[#f5f8f5] px-2 py-1 ${strong ? 'font-semibold' : ''}`}>
+      <span className="text-ink-muted">{label}&nbsp;</span>
+      <span className="font-mono">{value}</span>
+      {tip && <InfoTip text={tip} />}
+    </span>
+  )
+}
+
+function Mini({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-lg bg-[#f5f8f5] px-2 py-1.5">
-      <p className="text-[10px] text-ink-muted">{label}</p>
-      <p className={`font-mono text-sm font-semibold ${warn ? 'text-warning' : ''}`}>{value}</p>
+      <p className="text-xs text-ink-muted">{label}</p>
+      <p className="font-mono text-sm font-semibold">{value}</p>
     </div>
   )
 }

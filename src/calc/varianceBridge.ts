@@ -1,6 +1,7 @@
 import { filterBillingLines } from '@/lib/filters'
 import { money, sumMoney } from '@/lib/money'
 import type { DataStore, GlobalFilters, RegionCode, ServiceType } from '@/types'
+import { forecastComparability } from './forecastScope'
 import { computeRecognizedRevenue } from './recognizedRevenue'
 
 export interface VarianceBridgeItem {
@@ -23,10 +24,12 @@ export interface VarianceBridgeItem {
  */
 export function computeVarianceBridge(
   data: DataStore,
-  filters: GlobalFilters,
+  rawFilters: GlobalFilters,
   scenario: 'Base' | 'Upside' | 'Downside' = 'Base',
   groupBy: 'total' | 'customer' | 'region' | 'service' | 'month' = 'total',
 ): { items: VarianceBridgeItem[]; actual: number; forecast: number; checkSum: number } {
+  // Comparable window: only periods that carry Existing forecast rows (never compare actual to a missing forecast)
+  const filters = forecastComparability(data, rawFilters, scenario).comparableFilters
   const actual = computeRecognizedRevenue(data, filters).amount
 
   const forecastRows = data.forecasts.filter(

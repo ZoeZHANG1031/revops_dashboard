@@ -48,7 +48,7 @@ export function DetailDrawer() {
       <aside className="flex h-full w-full max-w-xl flex-col border-l border-[#dce6df] bg-white shadow-xl">
         <div className="flex items-start justify-between gap-3 border-b border-[#dce6df] px-4 py-3">
           <div className="min-w-0">
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-brand-600">
+            <p className="text-xs font-semibold uppercase tracking-wider text-brand-600">
               {openEntity.entityType.replace('_', ' ')} Detail
             </p>
             <h3 className="truncate text-base font-semibold text-ink">
@@ -69,7 +69,7 @@ export function DetailDrawer() {
         </div>
 
         {analysisTrail.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1 border-b border-[#dce6df] px-4 py-2 text-[11px]">
+          <div className="flex flex-wrap items-center gap-1 border-b border-[#dce6df] px-4 py-2 text-[13px]">
             {analysisTrail.map((t, i) => (
               <span key={`${t.entityType}-${t.entityId}-${i}`} className="flex items-center gap-1">
                 {i > 0 && <ChevronRight size={12} className="text-slate-300" />}
@@ -103,7 +103,7 @@ export function DetailDrawer() {
                   </li>
                 ))}
               </ol>
-              <p className="mt-2 text-[11px] text-ink-muted">
+              <p className="mt-2 text-[13px] text-ink-muted">
                 Filters: {kpiLineage.filtersApplied.join('; ') || 'none'}
               </p>
               {openEntity.actions && (
@@ -112,7 +112,7 @@ export function DetailDrawer() {
                     <button
                       key={a.label}
                       type="button"
-                      className="rounded-md bg-forest px-2.5 py-1 text-[11px] font-medium text-white hover:bg-forest-muted"
+                      className="rounded-md bg-forest px-2.5 py-1 text-[13px] font-medium text-white hover:bg-forest-muted"
                       onClick={a.onClick}
                     >
                       {a.label}
@@ -147,7 +147,7 @@ export function DetailDrawer() {
                           <span>{f.label}</span>
                           <span className="font-mono font-semibold">{f.value}</span>
                         </span>
-                        {f.formula && <span className="mt-1 text-[10px] text-ink-muted">{f.formula}</span>}
+                        {f.formula && <span className="mt-1 text-xs text-ink-muted">{f.formula}</span>}
                       </li>
                     ))}
                   </ul>
@@ -167,7 +167,7 @@ export function DetailDrawer() {
                           onClick={() => navigateToEntity(l.entityType, l.entityId, l.label)}
                         >
                           {l.label}{' '}
-                          <span className="text-[10px] text-ink-muted">({l.entityType})</span>
+                          <span className="text-xs text-ink-muted">({l.entityType})</span>
                         </button>
                       </li>
                     ))}
@@ -217,7 +217,7 @@ export function DetailDrawer() {
                 )}
                 {detail.entityType === 'exception' && (
                   <div className="mt-3">
-                    <p className="mb-1 text-[10px] font-semibold uppercase text-ink-muted">
+                    <p className="mb-1 text-xs font-semibold uppercase text-ink-muted">
                       Demo status update (local synthetic only)
                     </p>
                     <select
@@ -248,7 +248,7 @@ export function DetailDrawer() {
                   </div>
                   <div>
                     <dt className="text-ink-muted">Fields</dt>
-                    <dd className="font-mono text-[10px]">{detail.dataSource.fields.join(', ') || '—'}</dd>
+                    <dd className="font-mono text-xs">{detail.dataSource.fields.join(', ') || '—'}</dd>
                   </div>
                   <div className="flex justify-between gap-2">
                     <dt className="text-ink-muted">Snapshot</dt>
@@ -261,7 +261,7 @@ export function DetailDrawer() {
                 <Section title="Data Lineage Explorer">
                   <button
                     type="button"
-                    className="mb-2 text-[11px] text-brand-700"
+                    className="mb-2 text-[13px] text-brand-700"
                     onClick={() => setLineageOpen((v) => !v)}
                   >
                     {lineageOpen ? 'Collapse' : 'Expand'}
@@ -302,7 +302,7 @@ export function DetailDrawer() {
                       <button
                         key={id}
                         type="button"
-                        className="rounded-md border border-[#dce6df] px-2 py-1 text-[11px] hover:bg-[#f5f8f5]"
+                        className="rounded-md border border-[#dce6df] px-2 py-1 text-[13px] hover:bg-[#f5f8f5]"
                         onClick={() => setKpiLineageId(kpiLineageId === id ? null : id)}
                       >
                         {id}
@@ -310,7 +310,7 @@ export function DetailDrawer() {
                     ))}
                   </div>
                   {kpiLineageId && (
-                    <ol className="mt-2 space-y-1 text-[11px] text-ink-muted">
+                    <ol className="mt-2 space-y-1 text-[13px] text-ink-muted">
                       {lineageForMetric(kpiLineageId).hops.map((h, i) => (
                         <li key={i}>
                           {i + 1}. {h.label} ← {h.sourceTable}
@@ -331,7 +331,7 @@ export function DetailDrawer() {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section>
-      <h4 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">{title}</h4>
+      <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-ink-muted">{title}</h4>
       {children}
     </section>
   )

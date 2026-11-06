@@ -5,6 +5,7 @@ import { lineageForMetric, lineageFromRecognition, lineageFromShipment } from '@
 import { resolveEntity } from '@/lib/recordLookup'
 import { defaultFilters, listHistoricalPeriods, listPeriods } from '@/lib/filters'
 import { computeSharedMetrics } from '@/calc/metricRegistry'
+import { computeRecognizedRevenue } from '@/calc/recognizedRevenue'
 
 describe('analysis URL', () => {
   it('round-trips global filters', () => {
@@ -14,6 +15,7 @@ describe('analysis URL', () => {
         endPeriod: '2024-10',
         customerIds: ['CUST-001'],
         regions: ['West'],
+        metros: [],
         serviceTypes: ['Express'],
         snapshot: 'snap',
       },
@@ -65,14 +67,7 @@ describe('lineage + entity resolution', () => {
     const hist = listHistoricalPeriods(data)
     const filters = defaultFilters(periods, hist[hist.length - 1])
     const m = computeSharedMetrics(data, filters, 'Base')
-    const fromRec = data.revenueRecognition
-      .filter(
-        (r) =>
-          r.billing_line_id === null &&
-          r.accounting_period >= filters.startPeriod &&
-          r.accounting_period <= filters.endPeriod,
-      )
-      .reduce((a, r) => a + r.amount, 0)
+    const fromRec = computeRecognizedRevenue(data, filters).amount
     expect(Math.abs(m.recognizedRevenue - fromRec)).toBeLessThan(0.05)
   })
 })

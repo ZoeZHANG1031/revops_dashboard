@@ -1,9 +1,36 @@
-import { filterBillingLines, filterCosts, filterExceptions, filterInvoices } from '@/lib/filters'
+import { RECOVERABLE_EXCEPTION_TYPES } from './exceptionRegistry'
+import { forecastComparability } from './forecastScope'
+import { filterBillingLines, filterCosts, filterExceptions, filterInvoices, filterShipments } from '@/lib/filters'
 import { computeRecognizedRevenue } from '@/calc/recognizedRevenue'
+import { createCalcMemo, filterCacheKey } from '@/lib/memoCalc'
 import { money, pct, sumMoney } from '@/lib/money'
 import type { DataStore, GlobalFilters, KpiDefinition } from '@/types'
-import { computeCustomerHealth } from './customerHealth'
+import { computeCustomerHealth, type CustomerHealthRow } from './customerHealth'
 import { KPI_DEFINITIONS } from './kpiDefinitions'
+
+let _healthCache: { key: string; rows: CustomerHealthRow[] } | null = null
+
+function healthCacheKey(data: DataStore, filters: GlobalFilters): string {
+  return [
+    data.meta.seed,
+    data.meta.snapshot_label,
+    data.exceptions.length,
+    filters.startPeriod,
+    filters.endPeriod,
+    filters.customerIds.join(','),
+    filters.regions.join(','),
+    (filters.metros ?? []).join(','),
+    filters.serviceTypes.join(','),
+  ].join('|')
+}
+
+function cachedCustomerHealth(data: DataStore, filters: GlobalFilters): CustomerHealthRow[] {
+  const key = healthCacheKey(data, filters)
+  if (_healthCache?.key === key) return _healthCache.rows
+  const rows = computeCustomerHealth(data, filters)
+  _healthCache = { key, rows }
+  return rows
+}
 
 export type MetricId =
   | 'recognized_revenue'
@@ -426,7 +453,8 @@ const VARIABLE = new Set([
   'Other Variable',
 ])
 
-const RECOVERABLE_TYPES = new Set(['Missing Billing', 'Rate Mismatch', 'Missing Surcharge', 'Unbilled Packages'])
+// Recoverable types come from the shared Exception Registry (same rule on every page)
+const RECOVERABLE_TYPES = RECOVERABLE_EXCEPTION_TYPES as Set<string>
 
 export interface SharedMetrics {
   recognizedRevenue: number
@@ -439,7 +467,14 @@ export interface SharedMetrics {
   forecastExisting: number
   forecastPipeline: number
   forecastTotal: number
+  /** Comparable Actual (forecast periods, customer scope) − Existing Forecast */
   forecastVarianceExisting: number
+  /** Recognized revenue restricted to periods that have Existing forecast rows */
+  comparableActual: number
+  /** False when filters cannot be applied to forecast rows (Region / Metro / Service) */
+  forecastComparable: boolean
+  forecastComparableReason: string | null
+  forecastComparableNote: string | null
   expectedCharges: number
   reconciliationVariance: number
   unbilledExposure: number
@@ -456,10 +491,23 @@ export interface SharedMetrics {
   weightedPipeline: number
 }
 
+const sharedMetricsMemo = createCalcMemo<SharedMetrics>(64)
+
 export function computeSharedMetrics(
   data: DataStore,
   filters: GlobalFilters,
   scenario: 'Base' | 'Upside' | 'Downside' = 'Base',
+): SharedMetrics {
+  const key = filterCacheKey(filters, [scenario, `exc:${data.exceptions.length}`])
+  const cached = sharedMetricsMemo.get(data, key)
+  if (cached) return cached
+  return sharedMetricsMemo.set(data, key, computeSharedMetricsFresh(data, filters, scenario))
+}
+
+function computeSharedMetricsFresh(
+  data: DataStore,
+  filters: GlobalFilters,
+  scenario: 'Base' | 'Upside' | 'Downside',
 ): SharedMetrics {
   const lines = filterBillingLines(data, filters)
   const netBilledRevenue = sumMoney(lines.map((l) => l.net_amount))
@@ -482,13 +530,12 @@ export function computeSharedMetrics(
   const overdueInvoices = invoices.filter((i) => i.status === 'Overdue')
   const overdueAr = sumMoney(overdueInvoices.map((i) => i.net_amount))
   const openInvoices = invoices.filter((i) => i.status !== 'Paid')
+  const paidByInvoice = new Map<string, number>()
+  for (const p of data.payments) {
+    paidByInvoice.set(p.invoice_id, (paidByInvoice.get(p.invoice_id) ?? 0) + p.amount)
+  }
   const accountsReceivable = sumMoney(
-    openInvoices.map((i) => {
-      const paid = sumMoney(
-        data.payments.filter((p) => p.invoice_id === i.invoice_id).map((p) => p.amount),
-      )
-      return money(Math.max(0, i.net_amount - paid))
-    }),
+    openInvoices.map((i) => money(Math.max(0, i.net_amount - (paidByInvoice.get(i.invoice_id) ?? 0)))),
   )
 
   const forecastExisting = sumMoney(
@@ -516,34 +563,30 @@ export function computeSharedMetrics(
       .map((f) => f.forecast_recognized),
   )
 
-  // Expected charges for billable shipments
+  // Expected charges for billable shipments (index rate cards — avoid per-shipment find)
+  const rateCardsByKey = new Map<string, typeof data.rateCards>()
+  for (const r of data.rateCards) {
+    const key = `${r.contract_id}|${r.service_type}|${r.region}`
+    const list = rateCardsByKey.get(key) ?? []
+    list.push(r)
+    rateCardsByKey.set(key, list)
+  }
   let expectedCharges = 0
-  data.shipments
-    .filter((s) => {
-      const period = s.ship_date.slice(0, 7)
-      return (
-        period >= filters.startPeriod &&
-        period <= filters.endPeriod &&
-        s.billable &&
-        (filters.customerIds.length === 0 || filters.customerIds.includes(s.customer_id)) &&
-        (filters.regions.length === 0 || filters.regions.includes(s.region)) &&
-        (filters.serviceTypes.length === 0 || filters.serviceTypes.includes(s.service_type))
-      )
-    })
-    .forEach((s) => {
-      const card = data.rateCards.find(
-        (r) =>
-          r.contract_id === s.contract_id &&
-          r.service_type === s.service_type &&
-          r.region === s.region &&
-          r.effective_from <= s.ship_date &&
-          r.effective_to >= s.ship_date,
-      )
-      if (!card) return
-      let base = card.base_rate + s.weight_lbs * card.per_lb_rate
-      base *= 1 + (s.zone - 1) * 0.08 * card.zone_multiplier
-      expectedCharges += base + base * card.fuel_surcharge_pct + (s.is_remote ? card.remote_surcharge : 0)
-    })
+  let billable = 0
+  for (const s of filterShipments(data, filters)) {
+    if (!s.billable) continue
+    billable += 1
+    const cards =
+      rateCardsByKey.get(`${s.contract_id}|${s.service_type}|${s.region}`) ?? []
+    const card = cards.find(
+      (r) => r.effective_from <= s.ship_date && r.effective_to >= s.ship_date,
+    )
+    if (!card) continue
+    let base = card.base_rate + s.weight_lbs * card.per_lb_rate
+    base *= 1 + (s.zone - 1) * 0.08 * card.zone_multiplier
+    expectedCharges +=
+      base + base * card.fuel_surcharge_pct + (s.is_remote ? card.remote_surcharge : 0)
+  }
   expectedCharges = money(expectedCharges)
 
   const exceptions = filterExceptions(data, filters)
@@ -576,20 +619,18 @@ export function computeSharedMetrics(
   const contributionMargin = pct(contributionProfit, netBilledRevenue)
   const operatingProfit = money(contributionProfit - allocatedFixed)
 
-  const billable = data.shipments.filter((s) => {
-    const period = s.ship_date.slice(0, 7)
-    return (
-      period >= filters.startPeriod &&
-      period <= filters.endPeriod &&
-      s.billable &&
-      (filters.customerIds.length === 0 || filters.customerIds.includes(s.customer_id)) &&
-      (filters.regions.length === 0 || filters.regions.includes(s.region)) &&
-      (filters.serviceTypes.length === 0 || filters.serviceTypes.includes(s.service_type))
-    )
-  }).length
   const billed = new Set(lines.map((l) => l.shipment_id)).size
 
-  const health = computeCustomerHealth(data, filters)
+  const fcScope = forecastComparability(data, filters, scenario)
+  const sameWindow =
+    fcScope.comparableFilters.startPeriod === filters.startPeriod &&
+    fcScope.comparableFilters.endPeriod === filters.endPeriod
+  const comparableActual = sameWindow
+    ? recognizedRevenue
+    : computeRecognizedRevenue(data, fcScope.comparableFilters).amount
+
+  // Per-customer health is costly — memoize by snapshot + filter key within session.
+  const health = cachedCustomerHealth(data, filters)
   const scenarioRevenueAtRisk = sumMoney(health.map((h) => h.revenueAtRisk))
 
   const bookingsTcv = sumMoney(
@@ -612,7 +653,11 @@ export function computeSharedMetrics(
     forecastExisting,
     forecastPipeline,
     forecastTotal: money(forecastExisting + forecastPipeline),
-    forecastVarianceExisting: money(recognizedRevenue - forecastExisting),
+    forecastVarianceExisting: money(comparableActual - forecastExisting),
+    comparableActual,
+    forecastComparable: fcScope.comparable,
+    forecastComparableReason: fcScope.reason,
+    forecastComparableNote: fcScope.note,
     expectedCharges,
     reconciliationVariance: money(netBilledRevenue - expectedCharges),
     unbilledExposure,

@@ -1,4 +1,5 @@
 import { useApp } from '@/context/AppContext'
+import { METRO_DEFINITIONS } from '@/data/metros'
 import type { DateBasis } from '@/lib/analysisUrl'
 import type { RegionCode, ServiceType } from '@/types'
 
@@ -23,12 +24,12 @@ export function GlobalFiltersBar() {
     setScenario,
     dateBasis,
     setDateBasis,
-    resetFilters,
+    clearFilters,
     localFilters,
   } = useApp()
 
   return (
-    <div className="flex flex-wrap items-end gap-3 border-b border-[#dce6df] bg-white/80 px-4 py-3 backdrop-blur">
+    <div className="flex flex-wrap items-end gap-x-3 gap-y-2 border-b border-[#e1e9e4] bg-white/80 px-6 py-2.5 backdrop-blur">
       <FilterField label="From">
         <select
           className="filter-input"
@@ -74,7 +75,7 @@ export function GlobalFiltersBar() {
           ))}
         </select>
       </FilterField>
-      <FilterField label="Region / Metro">
+      <FilterField label="Region">
         <select
           className="filter-input"
           value={filters.regions[0] ?? ''}
@@ -82,6 +83,7 @@ export function GlobalFiltersBar() {
             setFilters({
               ...filters,
               regions: e.target.value ? [e.target.value as RegionCode] : [],
+              metros: [],
             })
           }
         >
@@ -89,6 +91,34 @@ export function GlobalFiltersBar() {
           {REGIONS.map((r) => (
             <option key={r} value={r}>
               {r}
+            </option>
+          ))}
+        </select>
+      </FilterField>
+      <FilterField label="Metro">
+        <select
+          className="filter-input min-w-[120px]"
+          value={filters.metros[0] ?? ''}
+          onChange={(e) => {
+            const metro = e.target.value
+            if (!metro) {
+              setFilters({ ...filters, metros: [] })
+              return
+            }
+            const def = METRO_DEFINITIONS.find((m) => m.metro === metro)
+            setFilters({
+              ...filters,
+              metros: [metro],
+              regions: def ? [def.region] : filters.regions,
+            })
+          }}
+        >
+          <option value="">All metros</option>
+          {METRO_DEFINITIONS.filter(
+            (m) => filters.regions.length === 0 || filters.regions.includes(m.region),
+          ).map((m) => (
+            <option key={m.metro} value={m.metro}>
+              {m.metro}
             </option>
           ))}
         </select>
@@ -136,32 +166,35 @@ export function GlobalFiltersBar() {
           ))}
         </select>
       </FilterField>
-      <FilterField label="Snapshot">
-        <div className="filter-input bg-[#f5f8f5] text-ink-muted">{data.meta.snapshot_label}</div>
-      </FilterField>
       {(localFilters.exceptionType || localFilters.exceptionStatus) && (
         <FilterField label="Local (Recon)">
-          <div className="filter-input max-w-[200px] truncate bg-amber-50 text-[11px] text-warning">
+          <div className="filter-input max-w-[200px] truncate bg-amber-50 text-[13px] text-warning">
             {[localFilters.exceptionType, localFilters.exceptionStatus].filter(Boolean).join(' · ')}
           </div>
         </FilterField>
       )}
-      <button
-        type="button"
-        className="mb-0.5 rounded-md border border-[#dce6df] px-2.5 py-1.5 text-[11px] font-medium text-ink-muted hover:bg-[#f5f8f5]"
-        onClick={resetFilters}
-      >
-        Clear Filters
-      </button>
+      {(filters.customerIds.length > 0 ||
+        filters.regions.length > 0 ||
+        filters.metros.length > 0 ||
+        filters.serviceTypes.length > 0) && (
+        <button
+          type="button"
+          className="mb-0.5 rounded-md border border-[#dce6df] px-2.5 py-1.5 text-[13px] font-medium text-ink-muted hover:bg-[#f5f8f5]"
+          onClick={clearFilters}
+          title="Clear global date/customer/region/metro/service/scenario filters"
+        >
+          Clear Filters
+        </button>
+      )}
     </div>
   )
 }
 
 function FilterField({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label className="text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
+    <label className="text-xs font-semibold text-ink-muted">
       {label}
-      <div className="mt-1">{children}</div>
+      <div className="mt-0.5">{children}</div>
     </label>
   )
 }

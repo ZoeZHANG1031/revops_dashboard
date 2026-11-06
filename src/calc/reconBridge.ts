@@ -52,8 +52,13 @@ export function computeReconciliationBridge(data: DataStore, filters: GlobalFilt
   // Timing: billable in period but billed in adjacent period (approx via ship period vs billing period)
   const shipments = filterShipments(data, filters).filter((s) => s.billable)
   let timing = 0
+  // First non-duplicate billing line per shipment (same result as Array.find, but indexed)
+  const firstLine = new Map<string, (typeof data.billingLines)[number]>()
+  for (const b of data.billingLines) {
+    if (!b.is_duplicate && !firstLine.has(b.shipment_id)) firstLine.set(b.shipment_id, b)
+  }
   shipments.forEach((s) => {
-    const line = data.billingLines.find((b) => b.shipment_id === s.shipment_id && !b.is_duplicate)
+    const line = firstLine.get(s.shipment_id)
     if (!line) return
     if (line.accounting_period !== s.ship_date.slice(0, 7)) {
       // if billed outside filter but shipped inside, expected includes it but actual may not (or vice versa)
