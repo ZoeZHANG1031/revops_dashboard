@@ -1,9 +1,9 @@
 import { useApp } from '@/context/AppContext'
-import { METRO_DEFINITIONS } from '@/data/metros'
+import { REGIONS as NETWORK_REGIONS, METRO_DEFINITIONS } from '@/data/metros'
 import type { DateBasis } from '@/lib/analysisUrl'
 import type { RegionCode, ServiceType } from '@/types'
 
-const REGIONS: RegionCode[] = ['Northeast', 'Southeast', 'Midwest', 'Southwest', 'West']
+const REGIONS: RegionCode[] = NETWORK_REGIONS
 const SERVICES: ServiceType[] = ['Standard', 'Express', 'SameDay', 'Economy']
 const DATE_BASIS: { id: DateBasis; label: string }[] = [
   { id: 'recognition', label: 'Recognition' },

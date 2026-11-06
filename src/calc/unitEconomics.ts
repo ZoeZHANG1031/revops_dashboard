@@ -1,5 +1,6 @@
 import { MONTHLY_FIXED_OPEX_POOL_BASE, MONTHLY_FIXED_OPEX_POOL_DOWNSIDE } from '@/data/generate'
 import { filterBillingLines, filterCosts, filterShipments } from '@/lib/filters'
+import { pkgs } from '@/lib/pricing'
 import { money, pct, sumMoney } from '@/lib/money'
 import type { DataStore, GlobalFilters, RegionCode, ServiceType } from '@/types'
 
@@ -75,7 +76,7 @@ export function computeUnitEconomics(
   const shipments = filterShipments(data, filters).filter((s) => s.billable)
 
   const netRevenue = sumMoney(lines.map((l) => l.net_amount))
-  const billablePackages = lines.length
+  const billablePackages = pkgs(lines)
   const variableCosts = costs.filter((c) => VARIABLE.has(c.cost_type))
   const totalVariable = sumMoney(variableCosts.map((c) => c.amount))
   const allocatedFixedBase = sumMoney(
@@ -117,9 +118,10 @@ export function computeUnitEconomics(
   const periods = [
     ...new Set(lines.map((l) => l.accounting_period)),
   ].sort()
-  const mid = Math.floor(periods.length / 2)
-  const earlyPeriods = periods.slice(0, mid)
-  const latePeriods = periods.slice(mid)
+  // Equal-length halves (middle month dropped when the window is odd) so volume effects compare like with like
+  const half = Math.floor(periods.length / 2)
+  const earlyPeriods = periods.slice(0, half)
+  const latePeriods = periods.slice(periods.length - half)
   const earlyLines = lines.filter((l) => earlyPeriods.includes(l.accounting_period))
   const lateLines = lines.filter((l) => latePeriods.includes(l.accounting_period))
   const earlyRev = sumMoney(earlyLines.map((l) => l.net_amount))
@@ -132,8 +134,8 @@ export function computeUnitEconomics(
   )
   const earlyProfit = money(earlyRev - earlyVar)
   const lateProfit = money(lateRev - lateVar)
-  const earlyVol = earlyLines.length || 1
-  const lateVol = lateLines.length || 1
+  const earlyVol = pkgs(earlyLines) || 1
+  const lateVol = pkgs(lateLines) || 1
   const earlyRpp = earlyRev / earlyVol
   const lateRpp = lateRev / lateVol
   const earlyCpp = earlyVar / earlyVol
@@ -214,7 +216,7 @@ export function computeUnitEconomics(
     explanation.push(`Operating profit change (after allocated fixed): ${operatingProfitChangePct}%.`)
   }
 
-  const deliveredCount = filterShipments(data, filters).filter((s) => s.delivery_status === 'Delivered').length
+  const deliveredCount = pkgs(filterShipments(data, filters).filter((s) => s.delivery_status === 'Delivered'))
   const dspAmt = costBreakdown.find((c) => c.type === 'DSP Delivery')?.amount ?? 0
   const claimsAmt = costBreakdown.find((c) => c.type === 'Claims')?.amount ?? 0
   const redeliveryAmt = costBreakdown.find((c) => c.type === 'Redelivery')?.amount ?? 0
@@ -313,7 +315,7 @@ function buildDimension(
     }
     const cur = map.get(key) ?? { revenue: 0, variableCost: 0, packages: 0, label }
     cur.revenue += l.net_amount
-    cur.packages += 1
+    cur.packages += l.package_count
     map.set(key, cur)
   })
 
@@ -417,7 +419,7 @@ export function computeCostDrivers(
       cur = { packages: 0, revenue: 0, cost: {} }
       agg.set(k, cur)
     }
-    cur.packages += 1
+    cur.packages += l.package_count
     cur.revenue += l.net_amount
   }
   for (const c of costs) {

@@ -1,4 +1,5 @@
 import { filterBillingLines } from '@/lib/filters'
+import { pkgs } from '@/lib/pricing'
 import { money, sumMoney } from '@/lib/money'
 import type { DataStore, GlobalFilters, RegionCode, ServiceType } from '@/types'
 import { forecastComparability } from './forecastScope'
@@ -53,7 +54,7 @@ export function computeVarianceBridge(
       : 0
 
   const lines = filterBillingLines(data, filters)
-  const actualVol = lines.length
+  const actualVol = pkgs(lines)
   const actualCredits = sumMoney(lines.map((l) => l.credits))
   const actualGross = sumMoney(
     lines.map((l) => l.base_charge + l.fuel_surcharge + l.remote_surcharge - l.discounts),
@@ -110,7 +111,7 @@ function computeMixEffect(
   const byCustomer = new Map<string, { vol: number; rev: number }>()
   lines.forEach((l) => {
     const cur = byCustomer.get(l.customer_id) ?? { vol: 0, rev: 0 }
-    cur.vol += 1
+    cur.vol += l.package_count
     cur.rev += l.base_charge + l.fuel_surcharge + l.remote_surcharge - l.discounts
     byCustomer.set(l.customer_id, cur)
   })
@@ -123,7 +124,7 @@ function computeMixEffect(
   })
 
   let mix = 0
-  const totalActVol = lines.length || 1
+  const totalActVol = pkgs(lines) || 1
   const totalFcVol = [...fcByCustomer.values()].reduce((a, b) => a + b.vol, 0) || 1
 
   byCustomer.forEach((act, cust) => {
@@ -146,7 +147,7 @@ function buildDrilldown(
     groupBy === 'customer'
       ? data.customers.map((c) => c.customer_id)
       : groupBy === 'region'
-        ? (['Northeast', 'Southeast', 'Midwest', 'Southwest', 'West'] as RegionCode[])
+        ? (['West', 'Central', 'East'] as RegionCode[])
         : groupBy === 'service'
           ? (['Standard', 'Express', 'SameDay', 'Economy'] as ServiceType[])
           : data.dates

@@ -1,4 +1,5 @@
 import { filterBillingLines, filterCosts, filterExceptions, filterShipments } from '@/lib/filters'
+import { pkgs } from '@/lib/pricing'
 import { money, pct, sumMoney } from '@/lib/money'
 import type { DataStore, GlobalFilters } from '@/types'
 
@@ -75,22 +76,29 @@ function bandFromScore(score: number): HealthBand {
 }
 
 /** Map a raw metric to 0–100 with steeper discrimination (not centered at 50). */
+// Missing inputs get a neutral (not perfect) score and lower data completeness.
 function scoreFromGrowth(growthPct: number | null): { score: number; observed: boolean } {
   if (growthPct == null) return { score: 55, observed: false }
-  // -40% → 10, 0% → 55, +40% → 95
-  return { score: clampScore(55 + growthPct * 1.1), observed: true }
+  // YoY volume: −30% → 24, 0% → 60, +10% → 72, +33% → 100
+  return { score: clampScore(60 + growthPct * 1.2), observed: true }
 }
 
 function scoreFromDelivery(otdPct: number | null): { score: number; observed: boolean } {
-  if (otdPct == null) return { score: 60, observed: false }
-  // 85% → ~40, 95% → ~75, 99% → ~95
-  return { score: clampScore((otdPct - 80) * 5), observed: true }
+  if (otdPct == null) return { score: 55, observed: false }
+  // On-time %: 97 → 100, 94 → 85, 90 → 65, 85 → 40
+  return { score: clampScore(100 - (97 - otdPct) * 5), observed: true }
 }
 
 function scoreFromMargin(cm: number | null): { score: number; observed: boolean } {
   if (cm == null) return { score: 55, observed: false }
-  // 10% → 30, 30% → 55, 55% → 85, 70% → 100
-  return { score: clampScore(cm * 1.2 + 10), observed: true }
+  // Contribution margin: 10% → 15, 20% → 45, 27% → 66, 35% → 90
+  return { score: clampScore((cm - 5) * 3), observed: true }
+}
+
+/** Same months one year earlier (YoY comparison avoids seasonality and unequal half-windows) */
+function priorYear(filters: GlobalFilters): GlobalFilters {
+  const shift = (p: string) => `${Number(p.slice(0, 4)) - 1}${p.slice(4)}`
+  return { ...filters, startPeriod: shift(filters.startPeriod), endPeriod: shift(filters.endPeriod) }
 }
 
 export function computeCustomerHealth(
@@ -128,7 +136,7 @@ export function computeCustomerHealth(
         ),
       )
       const revenue = sumMoney(lines.map((l) => l.net_amount))
-      const volume = lines.length
+      const volume = pkgs(lines)
       const varCost = sumMoney(costs.map((c) => c.amount))
       const contribution = money(revenue - varCost)
       const contributionMargin = pct(contribution, revenue)
@@ -140,33 +148,32 @@ export function computeCustomerHealth(
       let observedBits = 0
       let totalBits = 5
 
+      // Growth = YoY on the same months (needs history ≥ 12 months before the window).
+      // New / ramping accounts (no or tiny comparable base) → null, shown as "New / N/A", never +100%.
       let volumeScore = 55
       let volumeObserved = false
-      if (periods.length >= 2) {
-        const mid = Math.floor(periods.length / 2)
-        const early = periods.slice(0, mid)
-        const late = periods.slice(mid)
-        const earlyVol = shipments.filter((s) => early.includes(s.ship_date.slice(0, 7))).length
-        const lateVol = shipments.filter((s) => late.includes(s.ship_date.slice(0, 7))).length
-        priorRevenue = sumMoney(
-          lines.filter((l) => early.includes(l.accounting_period)).map((l) => l.net_amount),
-        )
-        const lateRev = sumMoney(
-          lines.filter((l) => late.includes(l.accounting_period)).map((l) => l.net_amount),
-        )
-        revenueGrowth =
-          priorRevenue === 0 ? null : money(((lateRev - priorRevenue) / Math.abs(priorRevenue)) * 100)
-        const change = earlyVol === 0 ? 0 : ((lateVol - earlyVol) / earlyVol) * 100
-        const g = scoreFromGrowth(change)
-        volumeScore = g.score
-        volumeObserved = g.observed
+      const histStart = data.meta.history_start ?? '0000-00'
+      const py = priorYear(custFilters)
+      if (py.startPeriod >= histStart) {
+        const priorLines = filterBillingLines(data, py)
+        const priorShips = filterShipments(data, py)
+        priorRevenue = sumMoney(priorLines.map((l) => l.net_amount))
+        const priorPkgs = pkgs(priorShips)
+        const curPkgs = pkgs(shipments)
+        const comparable = priorRevenue > 0 && priorRevenue >= revenue * 0.25 && priorPkgs > 0
+        if (comparable) {
+          revenueGrowth = money(((revenue - priorRevenue) / Math.abs(priorRevenue)) * 100)
+          const g = scoreFromGrowth(((curPkgs - priorPkgs) / priorPkgs) * 100)
+          volumeScore = g.score
+          volumeObserved = g.observed
+        }
       }
       if (volumeObserved) observedBits++
 
-      const delivered = shipments.filter((s) => s.delivery_status === 'Delivered').length
-      const onTime = shipments.filter((s) => s.on_time).length
-      const deliveryPerformance =
-        shipments.length === 0 ? null : money((onTime / shipments.length) * 100)
+      const shipPkgs = pkgs(shipments)
+      const delivered = pkgs(shipments.filter((s) => s.delivery_status === 'Delivered'))
+      const onTime = pkgs(shipments.filter((s) => s.on_time))
+      const deliveryPerformance = shipPkgs === 0 ? null : money((onTime / shipPkgs) * 100)
       const d = scoreFromDelivery(deliveryPerformance)
       const deliveryScore = d.score
       if (d.observed) observedBits++
@@ -194,20 +201,24 @@ export function computeCustomerHealth(
           ? Math.round(
               overdue.reduce((acc, inv) => {
                 const due = new Date(inv.due_date).getTime()
-                return acc + Math.max(0, (Date.parse('2025-11-01') - due) / 86400000)
+                return acc + Math.max(0, (Date.parse(data.meta.as_of_date ?? '2026-11-05') - due) / 86400000)
               }, 0) / overdue.length,
             )
           : 0
       }
 
-      const issues = filterExceptions(data, custFilters).filter((e) => e.status !== 'Resolved')
+      // Billing quality: open billing disputes relative to the customer's revenue (AR is scored separately)
+      const issues = filterExceptions(data, custFilters).filter(
+        (e) => e.status !== 'Resolved' && e.status !== 'Accepted' && e.status !== 'Rejected' && e.exception_type !== 'Overdue AR',
+      )
       const issueImpact = sumMoney(issues.map((e) => e.financial_impact))
-      const issueScore = clampScore(100 - Math.min(100, issues.length * 10 + issueImpact / 200))
-      if (shipments.length > 0 || issues.length > 0) observedBits++
+      const disputeShare = revenue > 0 ? (issueImpact / revenue) * 100 : 0
+      const issueScore = clampScore(100 - Math.min(100, disputeShare * 12 + issues.length * 3))
+      if (shipPkgs > 0 || issues.length > 0) observedBits++
 
-      const claims = costs.filter((c) => c.cost_type === 'Claims').length
-      const claimsRate =
-        shipments.length === 0 ? null : money((claims / shipments.length) * 1000) // per 1000
+      // Claims cost per 1,000 packages
+      const claimsCost = sumMoney(costs.filter((c) => c.cost_type === 'Claims').map((c) => c.amount))
+      const claimsRate = shipPkgs === 0 ? null : money((claimsCost / shipPkgs) * 1000)
 
       const healthScore = clampScore(
         volumeScore * w.volumeTrend +
@@ -222,6 +233,12 @@ export function computeCustomerHealth(
         dataCompleteness >= 80 ? 'High' : dataCompleteness >= 55 ? 'Medium' : 'Low'
 
       const assumedLossProbability = assumedLossFromHealth(healthScore)
+      // Expected future revenue = next 3 forecast months after the window (not the whole horizon)
+      const next3 = (() => {
+        const [y, m] = filters.endPeriod.split('-').map(Number)
+        const d = new Date(Date.UTC(y, m - 1 + 3, 1))
+        return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`
+      })()
       const expectedFutureRevenue = sumMoney(
         data.forecasts
           .filter(
@@ -229,7 +246,8 @@ export function computeCustomerHealth(
               f.customer_id === cust.customer_id &&
               f.scenario === 'Base' &&
               f.forecast_type === 'Existing' &&
-              f.accounting_period > filters.endPeriod,
+              f.accounting_period > filters.endPeriod &&
+              f.accounting_period <= next3,
           )
           .map((f) => f.forecast_recognized),
       )
@@ -276,7 +294,7 @@ export function computeCustomerHealth(
         contributionMargin,
         revenuePerPackage,
         deliveryPerformance:
-          shipments.length === 0 ? null : money((delivered / shipments.length) * 100),
+          shipPkgs === 0 ? null : money((delivered / shipPkgs) * 100),
         paymentScore,
         issueScore,
         volumeScore,

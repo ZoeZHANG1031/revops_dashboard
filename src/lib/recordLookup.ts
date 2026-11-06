@@ -194,8 +194,8 @@ export function resolveEntity(data: DataStore, entityType: EntityType, entityId:
       })
       return {
         ...base,
-        title: `Shipment ${s.shipment_id}`,
-        subtitle: `${s.service_type} · ${s.region} · ${s.delivery_status}`,
+        title: `Shipment lot ${s.shipment_id}`,
+        subtitle: `${s.package_count.toLocaleString()} packages · ${s.service_type} · ${s.metro} · ${s.station_id} · ${s.delivery_status}`,
         overview: [
           { label: 'Customer', value: s.customer_id },
           { label: 'Contract', value: s.contract_id },

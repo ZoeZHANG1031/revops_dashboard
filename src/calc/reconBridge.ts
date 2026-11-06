@@ -1,6 +1,7 @@
-import { filterBillingLines, filterExceptions, filterShipments } from '@/lib/filters'
 import { money, sumMoney } from '@/lib/money'
+import { filterBillingLinesIncludingDuplicates } from '@/lib/filters'
 import type { DataStore, GlobalFilters } from '@/types'
+import { computeBillingIntegrity } from './billingIntegrity'
 import { computeSharedMetrics } from './metricRegistry'
 
 export interface ReconBridgeItem {
@@ -11,158 +12,47 @@ export interface ReconBridgeItem {
 }
 
 /**
- * Decompose Actual Net Charges − Expected Charges into signed components that sum to the gap.
- * Positive amount increases Actual relative to Expected (or reduces the shortfall).
+ * Expected Charges (gross, ship-date basis) → signed components → Actual Net Billing (billing period).
+ * Components are built lot by lot (see billingIntegrity), so the bridge closes exactly; any
+ * remaining difference is shown as "Other / Unexplained" and never forced to zero.
  */
 export function computeReconciliationBridge(data: DataStore, filters: GlobalFilters) {
   const m = computeSharedMetrics(data, filters)
+  const bi = computeBillingIntegrity(data, filters)
   const expected = m.expectedCharges
   const actual = m.netBilledRevenue
   const totalGap = money(actual - expected)
-
-  const lines = filterBillingLines(data, filters)
-  const discounts = sumMoney(lines.map((l) => l.discounts))
-  const credits = sumMoney(lines.map((l) => l.credits))
-
-  const exceptions = filterExceptions(data, filters)
-  const missingBilling = sumMoney(
-    exceptions.filter((e) => e.exception_type === 'Missing Billing').map((e) => e.expected_amount),
-  )
-  const rateMismatch = sumMoney(
-    exceptions
-      .filter((e) => e.exception_type === 'Rate Mismatch')
-      .map((e) => e.difference), // expected − actual base (positive = underbilled)
-  )
-  const missingSurcharge = sumMoney(
-    exceptions.filter((e) => e.exception_type === 'Missing Surcharge').map((e) => e.expected_amount),
-  )
   const duplicates = sumMoney(
-    data.billingLines
-      .filter((b) => {
-        if (!b.is_duplicate) return false
-        return (
-          b.accounting_period >= filters.startPeriod &&
-          b.accounting_period <= filters.endPeriod &&
-          (filters.customerIds.length === 0 || filters.customerIds.includes(b.customer_id))
-        )
-      })
+    filterBillingLinesIncludingDuplicates(data, filters)
+      .filter((b) => b.is_duplicate)
       .map((b) => b.net_amount),
   )
-
-  // Timing: billable in period but billed in adjacent period (approx via ship period vs billing period)
-  const shipments = filterShipments(data, filters).filter((s) => s.billable)
-  let timing = 0
-  // First non-duplicate billing line per shipment (same result as Array.find, but indexed)
-  const firstLine = new Map<string, (typeof data.billingLines)[number]>()
-  for (const b of data.billingLines) {
-    if (!b.is_duplicate && !firstLine.has(b.shipment_id)) firstLine.set(b.shipment_id, b)
-  }
-  shipments.forEach((s) => {
-    const line = firstLine.get(s.shipment_id)
-    if (!line) return
-    if (line.accounting_period !== s.ship_date.slice(0, 7)) {
-      // if billed outside filter but shipped inside, expected includes it but actual may not (or vice versa)
-      if (
-        line.accounting_period < filters.startPeriod ||
-        line.accounting_period > filters.endPeriod
-      ) {
-        timing += line.net_amount
-      }
-    }
-  })
-  timing = money(timing)
-
-  // Signed impacts toward explaining Actual − Expected:
-  // Starting at Expected, apply effects to reach Actual.
-  // Discounts/credits reduce actual vs gross expected → negative
-  // Missing billing means expected includes charge not in actual → negative
-  // Rate mismatch underbill → negative
-  // Missing surcharge → negative
-  // Duplicates are excluded from actual KPI but if present inflate billing engine — not in actual net; note as separate investigated item (0 impact on this KPI gap)
-  // Timing: expected in period, billed outside → negative for this period's actual
-
-  const discountsImpact = money(-discounts)
-  const creditsImpact = money(-credits)
-  const missingImpact = money(-missingBilling)
-  const rateImpact = money(-Math.max(0, rateMismatch))
-  const surchargeImpact = money(-missingSurcharge)
-  const timingImpact = money(-timing)
-  const duplicateNote = money(0) // excluded from net actual by design
-
-  const explained = money(
-    discountsImpact +
-      creditsImpact +
-      missingImpact +
-      rateImpact +
-      surchargeImpact +
-      timingImpact +
-      duplicateNote,
-  )
-  const unresolved = money(totalGap - explained)
+  const timing = money(bi.timingOut + bi.timingIn)
 
   const items: ReconBridgeItem[] = [
-    { key: 'expected', label: 'Expected Charges', amount: expected, note: 'Rate-card theoretical for billable shipments' },
-    {
-      key: 'discounts',
-      label: 'Valid Contractual Discounts',
-      amount: discountsImpact,
-      note: 'Volume-tier / contractual discounts on billed lines',
-    },
-    {
-      key: 'credits',
-      label: 'Approved Credits',
-      amount: creditsImpact,
-      note: 'Service credits on billing lines (not claims expense)',
-    },
+    { key: 'expected', label: 'Expected Charges', amount: expected, note: 'Billable lots shipped in window, re-rated at the effective rate card (gross, before discount)' },
+    { key: 'discounts', label: 'Valid Contractual Discounts', amount: bi.discounts, note: 'Volume-tier discounts per contract' },
+    { key: 'credits', label: 'Approved Credits', amount: bi.credits, note: 'SLA / failed-attempt / goodwill credits on billing lines' },
     {
       key: 'timing',
       label: 'Timing Differences',
-      amount: timingImpact,
-      note: 'Ship period vs billing period cut-off',
+      amount: timing,
+      note: `Billed after window ${money(bi.timingOut)} · billed in window for earlier shipments +${money(bi.timingIn)} (ship date vs billing period)`,
     },
-    {
-      key: 'missing',
-      label: 'Missing Billing',
-      amount: missingImpact,
-      note: 'Billable shipments with no billing line (potential leakage)',
-    },
-    {
-      key: 'rate',
-      label: 'Rate Card Mismatch',
-      amount: rateImpact,
-      note: 'Underbill vs effective rate card',
-    },
-    {
-      key: 'surcharge',
-      label: 'Missing Surcharges',
-      amount: surchargeImpact,
-      note: 'Fuel/remote omitted in rating',
-    },
+    { key: 'missing', label: 'Missing Billing', amount: bi.missingBilling, note: 'Billable lots with no billing line — potential leakage (unconfirmed)' },
+    { key: 'rate', label: 'Rate Card Mismatch', amount: bi.rateMismatch, note: 'Billed below the effective rate-card version' },
+    { key: 'surcharge', label: 'Missing Surcharges', amount: bi.missingSurcharge, note: 'Fuel surcharge omitted in rating' },
     {
       key: 'duplicate',
       label: 'Duplicate Billing (excluded from net)',
-      amount: duplicateNote,
-      note: `Gross duplicate lines ${duplicates} exist but are excluded from Net Billings KPI — customer overcharge / refund risk, not recoverable revenue`,
+      amount: 0,
+      note: `${money(duplicates)} of duplicate lines exist but are excluded from Net Billing — refund risk, not recoverable revenue`,
     },
-    {
-      key: 'unresolved',
-      label: 'Unresolved / Other Investigated',
-      amount: unresolved,
-      note: 'Residual after known categories — do not hide; investigate',
-    },
-    { key: 'actual', label: 'Actual Net Charges', amount: actual, note: 'Non-duplicate billing net' },
+    { key: 'unresolved', label: 'Other / Unexplained', amount: bi.residual, note: 'Residual after known categories — investigate; not forced to zero' },
+    { key: 'actual', label: 'Actual Net Charges', amount: actual, note: 'Non-duplicate billing lines in billing period' },
   ]
 
-  const checkSum = money(
-    discountsImpact +
-      creditsImpact +
-      timingImpact +
-      missingImpact +
-      rateImpact +
-      surchargeImpact +
-      duplicateNote +
-      unresolved,
-  )
+  const checkSum = money(items.filter((i) => i.key !== 'expected' && i.key !== 'actual').reduce((a, i) => a + i.amount, 0))
 
   return {
     expected,
@@ -171,6 +61,6 @@ export function computeReconciliationBridge(data: DataStore, filters: GlobalFilt
     items,
     checkSum,
     reconciles: Math.abs(checkSum - totalGap) < 0.05,
-    openLeakage: money(missingBilling + Math.max(0, rateMismatch) + missingSurcharge),
+    openLeakage: money(-(bi.missingBilling + bi.rateMismatch + bi.missingSurcharge)),
   }
 }

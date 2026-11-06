@@ -1,4 +1,5 @@
 import { filterBillingLines, filterCosts, filterShipments } from '@/lib/filters'
+import { pkgs } from '@/lib/pricing'
 import { money, pct, sumMoney } from '@/lib/money'
 import type { DataStore, GlobalFilters, OperationalStatus } from '@/types'
 import { computeCustomerHealth } from './customerHealth'
@@ -27,12 +28,11 @@ export function computeDeliveryPerformanceImpact(
   filters: GlobalFilters,
 ): DeliveryPerformanceImpact {
   const shipments = filterShipments(data, filters)
-  const n = shipments.length
-  const delivered = shipments.filter((s) => s.delivery_status === 'Delivered')
+  const n = pkgs(shipments)
   const failed = shipments.filter((s) => s.delivery_status === 'Failed' || s.delivery_status === 'Returned')
-  const otd = shipments.filter((s) => s.on_time).length
-  const fas = shipments.filter((s) => s.first_attempt_success).length
-  const lost = shipments.filter((s) => s.delivery_status === 'Returned').length
+  const otd = pkgs(shipments.filter((s) => s.on_time))
+  const fas = pkgs(shipments.filter((s) => s.first_attempt_success))
+  const lost = pkgs(shipments.filter((s) => s.delivery_status === 'Returned'))
 
   const claimsCost = sumMoney(
     filterCosts(data, filters)
@@ -43,16 +43,9 @@ export function computeDeliveryPerformanceImpact(
 
   // Estimated revenue impact: failed non-billable + credits + claims (cost, not double-counted as revenue)
   const failedNonBillable = failed.filter((s) => !s.billable)
-  const avgRate =
-    filterBillingLines(data, filters).length > 0
-      ? money(
-          sumMoney(filterBillingLines(data, filters).map((b) => b.net_amount)) /
-            filterBillingLines(data, filters).length,
-        )
-      : 7
-  const revenueImpactFromFailures = money(
-    failedNonBillable.length * avgRate + creditCost,
-  )
+  const allLines = filterBillingLines(data, filters)
+  const avgRate = pkgs(allLines) > 0 ? money(sumMoney(allLines.map((b) => b.net_amount)) / pkgs(allLines)) : 5
+  const revenueImpactFromFailures = money(pkgs(failedNonBillable) * avgRate + creditCost)
 
   const health = computeCustomerHealth(data, filters)
   const atRiskCustomersLinked = health.filter(
@@ -74,10 +67,10 @@ export function computeDeliveryPerformanceImpact(
     )
     return {
       service,
-      otd: pct(subset.filter((s) => s.on_time).length, subset.length),
+      otd: pct(pkgs(subset.filter((s) => s.on_time)), pkgs(subset)),
       failedRate: pct(
-        subset.filter((s) => s.delivery_status === 'Failed' || s.delivery_status === 'Returned').length,
-        subset.length,
+        pkgs(subset.filter((s) => s.delivery_status === 'Failed' || s.delivery_status === 'Returned')),
+        pkgs(subset),
       ),
       revenue: rev,
       claims,
@@ -85,7 +78,7 @@ export function computeDeliveryPerformanceImpact(
   })
 
   const explanation: string[] = []
-  const failedRate = pct(failed.length, n)
+  const failedRate = pct(pkgs(failed), n)
   if ((failedRate ?? 0) > 4) {
     explanation.push(
       `Failed/returned rate ${failedRate}% reduces billable conversion and drives SLA credits.`,
@@ -153,7 +146,7 @@ export function computeGeographicProfitability(
     else key = l.service_type
     const cur = map.get(key) ?? { label: key, revenue: 0, packages: 0, dspCost: 0 }
     cur.revenue += l.net_amount
-    cur.packages += 1
+    cur.packages += l.package_count
     map.set(key, cur)
     let ks = shipKeys.get(l.shipment_id)
     if (!ks) {
@@ -228,21 +221,22 @@ export function computeShipmentToRevenueFlow(
   const billedIds = new Set(lines.map((l) => l.shipment_id))
 
   const countStatus = (statuses: OperationalStatus[]) =>
-    shipments.filter((s) => statuses.includes(s.operational_status)).length
+    pkgs(shipments.filter((s) => statuses.includes(s.operational_status)))
 
   // Cumulative funnel semantics for physical flow:
   // Accepted = all shipments that entered network
   // Sorted = progressed past accept (everything except still-only-accepted — we model all as at least Sorted once manifested)
-  const accepted = shipments.length
-  const sorted = shipments.filter((s) =>
+  const accepted = pkgs(shipments)
+  const sorted = pkgs(shipments.filter((s) =>
     ['Sorted', 'Out for Delivery', 'Delivered', 'Failed', 'Returned'].includes(s.operational_status),
-  ).length
-  const ofd = shipments.filter((s) =>
+  ))
+  const ofd = pkgs(shipments.filter((s) =>
     ['Out for Delivery', 'Delivered', 'Failed', 'Returned'].includes(s.operational_status),
-  ).length
+  ))
   const delivered = countStatus(['Delivered'])
-  const billable = shipments.filter((s) => s.billable).length
-  const billed = billedIds.size
+  const billable = pkgs(shipments.filter((s) => s.billable))
+  const billed = pkgs(lines)
+  void billedIds
 
   const stages = [
     {

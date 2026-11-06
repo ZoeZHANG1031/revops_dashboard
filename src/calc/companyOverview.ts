@@ -9,6 +9,7 @@ import {
   priorPeriodRange,
 } from '@/lib/filters'
 import { createCalcMemo, filterCacheKey } from '@/lib/memoCalc'
+import { pkgs } from '@/lib/pricing'
 import { money, pct, sumMoney } from '@/lib/money'
 import type { DataStore, GlobalFilters, RegionCode, ServiceType } from '@/types'
 import { assessDuplicateBilling } from './duplicateBilling'
@@ -170,6 +171,12 @@ export interface CompanyOverviewModel {
     avgDailyShipments: number | null
     deliverySuccessRate: number | null
     activeDspPartners: number | null
+    /** Stations with shipments in the period */
+    activeStations: number
+    /** Monthly package capacity of active stations (daily capacity × 30) */
+    monthlyCapacity: number
+    /** Packages per month ÷ monthly capacity of active stations */
+    networkUtilization: number | null
     unavailable: { label: string; reason: string }[]
   }
   metros: MetroFootprintRow[]
@@ -300,7 +307,9 @@ function computeCompanyOverviewFresh(data: DataStore, filters: GlobalFilters): C
   const companyNetBilling = isCompanyScope
     ? netBilledRevenue
     : sumMoney(companyLines.map((l) => l.net_amount))
-  const billedPackages = new Set(lines.map((l) => l.shipment_id)).size
+  // Packages, not rows: each lot / billing line carries package_count
+  const billedPackages = pkgs(lines)
+  const shipmentPkgs = pkgs(shipments)
   const selectedCostsEarly = filterCosts(data, filters)
   const varCost = sumMoney(
     selectedCostsEarly.filter((c) => VARIABLE_COST_TYPES.has(c.cost_type)).map((c) => c.amount),
@@ -318,9 +327,20 @@ function computeCompanyOverviewFresh(data: DataStore, filters: GlobalFilters): C
       return Math.max(1, Math.round((end.getTime() - start.getTime()) / 86400000) + 1)
     })()
 
-  const delivered = shipments.filter((s) => s.delivery_status === 'Delivered').length
-  const deliverySuccessRate = shipments.length ? pct(delivered, shipments.length) : null
+  const delivered = pkgs(shipments.filter((s) => s.delivery_status === 'Delivered'))
+  const deliverySuccessRate = shipmentPkgs ? pct(delivered, shipmentPkgs) : null
   const dspIds = new Set(shipments.map((s) => s.dsp_id).filter(Boolean))
+  const activeStationIds = new Set(shipments.map((s) => s.station_id))
+  const monthlyCapacity = (data.stations ?? [])
+    .filter((st) => activeStationIds.has(st.station_id))
+    .reduce((a, st) => a + st.capacity_daily * 30, 0)
+  const monthsInRange = Math.max(
+    1,
+    (Number(filters.endPeriod.slice(0, 4)) - Number(filters.startPeriod.slice(0, 4))) * 12 +
+      Number(filters.endPeriod.slice(5, 7)) -
+      Number(filters.startPeriod.slice(5, 7)) +
+      1,
+  )
 
   const scope: ScopeCompare = {
     label: filters.regions[0] || filters.serviceTypes[0] || filters.customerIds[0] || 'All',
@@ -332,17 +352,17 @@ function computeCompanyOverviewFresh(data: DataStore, filters: GlobalFilters): C
       filters.customerIds.length > 0,
     company: {
       activeCustomers: companyActive.size,
-      shipments: companyShips.length,
+      shipments: pkgs(companyShips),
       netBilling: companyNetBilling,
       recognized: companyRec,
     },
     selected: {
       activeCustomers: activeIds.size,
-      shipments: shipments.length,
+      shipments: shipmentPkgs,
       netBilling: netBilledRevenue,
       recognized: selectedRec,
       shareOfCustomers: pct(activeIds.size, companyActive.size),
-      shareOfShipments: pct(shipments.length, companyShips.length),
+      shareOfShipments: pct(shipmentPkgs, pkgs(companyShips)),
       shareOfNetBilling: pct(netBilledRevenue, companyNetBilling),
     },
   }
@@ -356,7 +376,7 @@ function computeCompanyOverviewFresh(data: DataStore, filters: GlobalFilters): C
       region: RegionCode
       customers: Set<string>
       varCost: number
-      billedPkgs: Set<string>
+      billedPkgs: number
     }
   >()
   const ensureMetro = (metro: string, region: RegionCode) => {
@@ -368,7 +388,7 @@ function computeCompanyOverviewFresh(data: DataStore, filters: GlobalFilters): C
         region,
         customers: new Set<string>(),
         varCost: 0,
-        billedPkgs: new Set<string>(),
+        billedPkgs: 0,
       }
       metroAgg.set(metro, cur)
     }
@@ -376,7 +396,7 @@ function computeCompanyOverviewFresh(data: DataStore, filters: GlobalFilters): C
   }
   for (const s of shipments) {
     const cur = ensureMetro(s.metro, s.region)
-    cur.shipments += 1
+    cur.shipments += s.package_count
     cur.customers.add(s.customer_id)
   }
   const shipMetro = new Map(shipments.map((s) => [s.shipment_id, s.metro]))
@@ -386,7 +406,7 @@ function computeCompanyOverviewFresh(data: DataStore, filters: GlobalFilters): C
     if (!metro) continue
     const cur = ensureMetro(metro, shipRegion.get(l.shipment_id) ?? l.region)
     cur.revenue += l.net_amount
-    cur.billedPkgs.add(l.shipment_id)
+    cur.billedPkgs += l.package_count
   }
   const selectedCosts = selectedCostsEarly
   for (const c of selectedCosts) {
@@ -398,12 +418,20 @@ function computeCompanyOverviewFresh(data: DataStore, filters: GlobalFilters): C
     cur.varCost += c.amount
   }
 
+  // Exceptions per metro and packages in exception-affected lots (rate = affected pkgs ÷ pkgs)
   const metroExceptions = new Map<string, number>()
+  const metroExceptionPkgs = new Map<string, number>()
+  const lotPkgs = new Map(shipments.map((s) => [s.shipment_id, s.package_count]))
+  const seenLot = new Set<string>()
   for (const e of filterExceptions(data, filters)) {
     if (!e.shipment_id) continue
     const metro = shipMetro.get(e.shipment_id)
     if (!metro) continue
     metroExceptions.set(metro, (metroExceptions.get(metro) ?? 0) + 1)
+    if (!seenLot.has(e.shipment_id)) {
+      seenLot.add(e.shipment_id)
+      metroExceptionPkgs.set(metro, (metroExceptionPkgs.get(metro) ?? 0) + (lotPkgs.get(e.shipment_id) ?? 0))
+    }
   }
 
   const prior = priorPeriodRange(filters)
@@ -413,7 +441,7 @@ function computeCompanyOverviewFresh(data: DataStore, filters: GlobalFilters): C
   if (priorComparable) {
     const priorFilters: GlobalFilters = { ...filters, ...prior }
     for (const s of filterShipments(data, priorFilters)) {
-      priorMetroCounts.set(s.metro, (priorMetroCounts.get(s.metro) ?? 0) + 1)
+      priorMetroCounts.set(s.metro, (priorMetroCounts.get(s.metro) ?? 0) + s.package_count)
     }
   }
 
@@ -425,10 +453,10 @@ function computeCompanyOverviewFresh(data: DataStore, filters: GlobalFilters): C
         region: d.region,
         customers: new Set<string>(),
         varCost: 0,
-        billedPkgs: new Set<string>(),
+        billedPkgs: 0,
       }
     const { x, y } = projectUs(d.lon, d.lat)
-    const billedPkgs = agg.billedPkgs.size
+    const billedPkgs = agg.billedPkgs
     const revenue = money(agg.revenue)
     const varCost = money(agg.varCost)
     const metroRpp = billedPkgs ? money(revenue / billedPkgs) : null
@@ -457,7 +485,7 @@ function computeCompanyOverviewFresh(data: DataStore, filters: GlobalFilters): C
       contribution: money(revenue - varCost),
       exceptionCount: metroExceptions.get(d.metro) ?? 0,
       exceptionRate: agg.shipments
-        ? ((metroExceptions.get(d.metro) ?? 0) / agg.shipments) * 100
+        ? ((metroExceptionPkgs.get(d.metro) ?? 0) / agg.shipments) * 100
         : null,
       source: d.source,
     }
@@ -560,6 +588,7 @@ function computeCompanyOverviewFresh(data: DataStore, filters: GlobalFilters): C
   type SvcAcc = {
     shipments: number
     billed: Set<string>
+    billedPkgs: number
     net: number
     varCost: number
     costShips: Set<string>
@@ -568,6 +597,7 @@ function computeCompanyOverviewFresh(data: DataStore, filters: GlobalFilters): C
   const emptySvc = (): SvcAcc => ({
     shipments: 0,
     billed: new Set(),
+    billedPkgs: 0,
     net: 0,
     varCost: 0,
     costShips: new Set(),
@@ -577,13 +607,14 @@ function computeCompanyOverviewFresh(data: DataStore, filters: GlobalFilters): C
   }
   for (const s of mixParentShips) {
     const acc = svcAcc.get(s.service_type)
-    if (acc) acc.shipments += 1
+    if (acc) acc.shipments += s.package_count
   }
   for (const l of mixParentLines) {
     const acc = svcAcc.get(l.service_type)
     if (!acc) continue
     acc.net += l.net_amount
     acc.billed.add(l.shipment_id)
+    acc.billedPkgs += l.package_count
   }
   const mixShipService = new Map(mixParentShips.map((s) => [s.shipment_id, s.service_type]))
   for (const c of mixParentCosts) {
@@ -607,15 +638,15 @@ function computeCompanyOverviewFresh(data: DataStore, filters: GlobalFilters): C
     ['Standard', 'Economy', 'Express', 'SameDay'] as ServiceType[]
   ).map((serviceType) => {
     const acc = svcAcc.get(serviceType)!
-    const billed = acc.billed.size
+    const billed = acc.billedPkgs
     const netBilling = money(acc.net)
     const variableCost = money(acc.varCost)
     const contrib = money(netBilling - variableCost)
     const coverage =
       billed === 0
         ? 'No billed packages'
-        : acc.costShips.size < billed
-          ? `Cost rows cover ${acc.costShips.size}/${billed} billed packages — CPP uses attributable cost ÷ billed packages (coverage incomplete).`
+        : acc.costShips.size < acc.billed.size
+          ? `Cost rows cover ${acc.costShips.size}/${acc.billed.size} billed lots — CPP uses attributable cost ÷ billed packages (coverage incomplete).`
           : 'Cost coverage aligned to billed packages in filter.'
     return {
       serviceType,
@@ -628,7 +659,7 @@ function computeCompanyOverviewFresh(data: DataStore, filters: GlobalFilters): C
       revenuePerPackage: billed ? money(netBilling / billed) : null,
       costPerPackage: billed ? money(variableCost / billed) : null,
       contributionPerPackage: billed ? money(contrib / billed) : null,
-      shipmentShare: pct(acc.shipments, mixParentShips.length),
+      shipmentShare: pct(acc.shipments, pkgs(mixParentShips)),
       revenueShare: pct(netBilling, mixParentNet),
       contributionShare: pct(contrib, mixParentContrib),
       costCoverageNote: coverage,
@@ -672,13 +703,13 @@ function computeCompanyOverviewFresh(data: DataStore, filters: GlobalFilters): C
   const shipsByMonth = new Map<string, number>()
   for (const s of trendShips) {
     const p = s.ship_date.slice(0, 7)
-    shipsByMonth.set(p, (shipsByMonth.get(p) ?? 0) + 1)
+    shipsByMonth.set(p, (shipsByMonth.get(p) ?? 0) + s.package_count)
   }
-  const billByMonth = new Map<string, { net: number; billed: Set<string> }>()
+  const billByMonth = new Map<string, { net: number; billed: number }>()
   for (const l of trendLines) {
-    const cur = billByMonth.get(l.accounting_period) ?? { net: 0, billed: new Set() }
+    const cur = billByMonth.get(l.accounting_period) ?? { net: 0, billed: 0 }
     cur.net += l.net_amount
-    cur.billed.add(l.shipment_id)
+    cur.billed += l.package_count
     billByMonth.set(l.accounting_period, cur)
   }
   const recByMonth = new Map<string, number>()
@@ -689,7 +720,7 @@ function computeCompanyOverviewFresh(data: DataStore, filters: GlobalFilters): C
   const monthly = trendMonths.map((period) => {
     const mBillAcc = billByMonth.get(period)
     const mBill = money(mBillAcc?.net ?? 0)
-    const mBilled = mBillAcc?.billed.size ?? 0
+    const mBilled = mBillAcc?.billed ?? 0
     const mRecAmt = money(recByMonth.get(period) ?? 0)
     const mRecDisplay: RecognizedRevenueResult['display'] =
       trendRec.display === 'no_records' && (recByMonth.get(period) == null)
@@ -731,12 +762,12 @@ function computeCompanyOverviewFresh(data: DataStore, filters: GlobalFilters): C
     const priorActive = new Set<string>()
     priorShipsList.forEach((s) => priorActive.add(s.customer_id))
     priorLines.forEach((l) => priorActive.add(l.customer_id))
-    const priorBilled = new Set(priorLines.map((l) => l.shipment_id)).size
+    const priorBilled = pkgs(priorLines)
     const priorRpp = priorBilled ? priorNet / priorBilled : null
     shipmentGrowth =
-      priorShipsList.length === 0
+      pkgs(priorShipsList) === 0
         ? null
-        : ((shipments.length - priorShipsList.length) / priorShipsList.length) * 100
+        : ((shipmentPkgs - pkgs(priorShipsList)) / pkgs(priorShipsList)) * 100
     netBillingGrowth =
       priorNet === 0 ? null : ((netBilledRevenue - priorNet) / priorNet) * 100
     rppGrowth =
@@ -994,7 +1025,7 @@ function computeCompanyOverviewFresh(data: DataStore, filters: GlobalFilters): C
       activeCustomers: activeIds.size,
       activeDefinition:
         'Distinct customers with ≥1 shipment (ship_date) OR ≥1 non-duplicate billing line (accounting_period) in Selected Scope',
-      shipmentVolume: shipments.length,
+      shipmentVolume: shipmentPkgs,
       netBilling: netBilledRevenue,
       recognized: selectedRec,
       revenuePerPackage,
@@ -1002,15 +1033,13 @@ function computeCompanyOverviewFresh(data: DataStore, filters: GlobalFilters): C
       contributionProfit,
       activeMetroMarkets: new Set(shipments.map((s) => s.metro)).size,
       serviceTypesInPeriod: new Set(shipments.map((s) => s.service_type)).size,
-      avgDailyShipments: money(shipments.length / daySpan),
+      avgDailyShipments: money(shipmentPkgs / daySpan),
       deliverySuccessRate,
       activeDspPartners: dspIds.size > 0 ? dspIds.size : null,
-      unavailable: [
-        {
-          label: 'Facilities / Stations',
-          reason: 'Not modeled in synthetic data store',
-        },
-      ],
+      activeStations: activeStationIds.size,
+      monthlyCapacity,
+      networkUtilization: monthlyCapacity ? pct(shipmentPkgs / monthsInRange, monthlyCapacity) : null,
+      unavailable: [],
     },
     metros,
     segments,

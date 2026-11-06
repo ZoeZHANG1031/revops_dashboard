@@ -1,4 +1,5 @@
 import { filterBillingLines, filterExceptions, filterShipments } from '@/lib/filters'
+import { pkgs } from '@/lib/pricing'
 import { rowsInPeriodRange } from '@/lib/periodIndex'
 import { money, pct, sumMoney } from '@/lib/money'
 import type { DataStore, ExceptionType, FactException, GlobalFilters } from '@/types'
@@ -111,8 +112,13 @@ export function computeLifecycleStages(
   const openBy = (types: ExceptionType[]) => open.filter((e) => types.includes(e.exception_type))
 
   const customerScoped = filters.customerIds.length > 0
+  // Contracts effective at the end of the window (contracts are versioned over time)
+  const asOf = `${filters.endPeriod}-28`
   const activeContracts = data.contracts.filter(
-    (c) => c.status === 'Active' && (!customerScoped || filters.customerIds.includes(c.customer_id)),
+    (c) =>
+      c.start_date <= asOf &&
+      c.end_date >= asOf &&
+      (!customerScoped || filters.customerIds.includes(c.customer_id)),
   )
   const contractedCustomers = new Set(activeContracts.map((c) => c.customer_id))
   const shippingCustomers = new Set(shipments.map((s) => s.customer_id))
@@ -123,8 +129,8 @@ export function computeLifecycleStages(
   // difference, not "unbilled".
   const everBilled = new Set<string>()
   for (const b of data.billingLines) if (!b.is_duplicate) everBilled.add(b.shipment_id)
-  const unbilledShipments = billable.filter((s) => !everBilled.has(s.shipment_id)).length
-  const billedInPeriodPkgs = new Set(lines.map((l) => l.shipment_id)).size
+  const unbilledShipments = pkgs(billable.filter((s) => !everBilled.has(s.shipment_id)))
+  const billedInPeriodPkgs = pkgs(lines)
 
   const discounts = sumMoney(lines.map((l) => l.discounts))
   const credits = sumMoney(lines.map((l) => l.credits))
@@ -153,14 +159,14 @@ export function computeLifecycleStages(
 
   const nodes: LifecycleNode[] = [
     node('contract', 'Contract', 'Active agreements', 'Active contracts (TCV ≠ revenue)', activeContracts.length, 'count'),
-    node('shipment', 'Shipment', 'Physical volume', 'Shipments (ship_date)', shipments.length, 'count'),
+    node('shipment', 'Shipment', 'Physical volume', 'Packages shipped (ship_date)', pkgs(shipments), 'count'),
     node('rating', 'Rating', 'Rate-card charges', 'Gross rated charges', m.grossBillings, 'money'),
     node('billing', 'Billing', 'Net commercial bill', 'Net Billing', m.netBilledRevenue, 'money'),
     node('recognition', 'Recognition', 'Booked revenue', 'Recognized Revenue', recognized, 'money'),
     node('collection', 'Collection', 'Cash application', 'Cash collected (payment_date)', m.cashCollections, 'money'),
   ]
 
-  const unbilledShare = pct(unbilledShipments, billable.length)
+  const unbilledShare = pct(unbilledShipments, pkgs(billable))
   const gaps: LifecycleGap[] = [
     {
       id: 'gap_contract_shipment',
@@ -237,9 +243,9 @@ export function computeLifecycleStages(
       logic: 'COUNT(shipments); Billable = shipments where billable = true',
       caveat: 'Shipments ≠ billed packages; non-billable failures are not leakage.',
       kpis: [
-        { label: 'Shipments', value: shipments.length, unit: 'count' },
-        { label: 'Billable shipments', value: billable.length, unit: 'count' },
-        { label: 'Billable rate', value: pct(billable.length, shipments.length), unit: 'percent' },
+        { label: 'Packages shipped', value: pkgs(shipments), unit: 'count' },
+        { label: 'Billable packages', value: pkgs(billable), unit: 'count' },
+        { label: 'Billable rate', value: pct(pkgs(billable), pkgs(shipments)), unit: 'percent' },
       ],
       exceptionTypes: STAGE_EXCEPTION_TYPES.shipment,
       trendKeys: ['shipments', 'billable'],
@@ -328,8 +334,8 @@ export function computeLifecycleStages(
       logic: 'Unbilled = billable shipments with no non-duplicate billing line in any period',
       caveat: 'Cross-period billing is a timing difference and is excluded from Unbilled.',
       kpis: [
-        { label: 'Billable shipments', value: billable.length, unit: 'count' },
-        { label: 'Unbilled shipments', value: unbilledShipments, unit: 'count' },
+        { label: 'Billable packages', value: pkgs(billable), unit: 'count' },
+        { label: 'Unbilled packages', value: unbilledShipments, unit: 'count' },
         { label: 'Unbilled share', value: unbilledShare, unit: 'percent' },
         { label: 'Unbilled exposure', value: m.unbilledExposure, unit: 'money', note: 'From exceptions' },
       ],
@@ -400,8 +406,8 @@ function lifecycleMonthly(data: DataStore, filters: GlobalFilters): LifecycleMon
   }
   for (const s of filterShipments(data, filters)) {
     const cur = get(s.ship_date.slice(0, 7))
-    cur.shipments += 1
-    if (s.billable) cur.billable += 1
+    cur.shipments += s.package_count
+    if (s.billable) cur.billable += s.package_count
   }
   for (const l of filterBillingLines(data, filters)) get(l.accounting_period).netBilling += l.net_amount
   for (const r of computeRecognizedRevenue(data, filters).rows) get(r.accounting_period).recognized += r.amount

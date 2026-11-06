@@ -146,9 +146,9 @@ export function CustomerIntelligence() {
       .filter((p) => p >= filters.startPeriod && p <= filters.endPeriod)
       .map((period) => ({
         period,
-        volume: data.shipments.filter(
-          (s) => s.customer_id === selected.customerId && s.ship_date.startsWith(period),
-        ).length,
+        volume: data.shipments
+          .filter((s) => s.customer_id === selected.customerId && s.ship_date.startsWith(period))
+          .reduce((a, s) => a + s.package_count, 0),
         revenue: data.billingLines
           .filter(
             (b) =>

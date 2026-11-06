@@ -7,6 +7,8 @@ import {
 import { money, pct, sumMoney } from '@/lib/money'
 import type { DataStore, FactException, GlobalFilters } from '@/types'
 import { computeRecognizedRevenue } from './recognizedRevenue'
+import { computeSharedMetrics } from './metricRegistry'
+import { pkgs } from '@/lib/pricing'
 
 export interface ReconciliationSummary {
   expectedBillableShipments: number
@@ -41,25 +43,9 @@ export function computeReconciliation(
   const billedShipmentIds = new Set(lines.map((l) => l.shipment_id))
   const missing = billable.filter((s) => !billedShipmentIds.has(s.shipment_id))
 
-  // Expected charges from rate cards for billable shipments
-  let expectedCharges = 0
-  billable.forEach((s) => {
-    const card = data.rateCards.find(
-      (r) =>
-        r.contract_id === s.contract_id &&
-        r.service_type === s.service_type &&
-        r.region === s.region &&
-        r.effective_from <= s.ship_date &&
-        r.effective_to >= s.ship_date,
-    )
-    if (!card) return
-    let base = card.base_rate + s.weight_lbs * card.per_lb_rate
-    base = base * (1 + (s.zone - 1) * 0.08 * card.zone_multiplier)
-    const fuel = (base) * card.fuel_surcharge_pct
-    const remote = s.is_remote ? card.remote_surcharge : 0
-    expectedCharges += base + fuel + remote
-  })
-  expectedCharges = money(expectedCharges)
+  // Expected charges & billing accuracy come from the shared lot-level rater (single source of truth)
+  const shared = computeSharedMetrics(data, filters)
+  const expectedCharges = shared.expectedCharges
 
   const actualCharges = sumMoney(lines.map((l) => l.net_amount))
   const netInvoiceAmount = sumMoney(invoices.map((i) => i.net_amount))
@@ -78,29 +64,11 @@ export function computeReconciliation(
       .map((g) => g.credit - g.debit),
   )
 
-  const unbilledExposure = sumMoney(
-    data.exceptions
-      .filter((e) => {
-        if (e.exception_type !== 'Missing Billing') return false
-        if (!e.shipment_id) return false
-        return missing.some((m) => m.shipment_id === e.shipment_id)
-      })
-      .map((e) => e.expected_amount),
-  )
+  // Unbilled exposure = Missing Billing exceptions in scope (same rule as shared metrics)
+  const unbilled = shared.unbilledExposure
+  void missing
 
-  // Fallback: compute from missing if exception list incomplete for filter
-  const unbilled =
-    unbilledExposure ||
-    money(
-      missing.reduce((acc, s) => {
-        const exc = data.exceptions.find(
-          (e) => e.shipment_id === s.shipment_id && e.exception_type === 'Missing Billing',
-        )
-        return acc + (exc?.expected_amount ?? 0)
-      }, 0),
-    )
-
-  const billingAccuracy = pct(lines.length, billable.length)
+  const billingAccuracy = shared.billingAccuracy
   const reconciliationDifference = money(actualCharges - expectedCharges)
 
   const warnings: string[] = []
@@ -144,8 +112,8 @@ export function computeReconciliation(
   void invoiceVsBilling
 
   return {
-    expectedBillableShipments: billable.length,
-    actualBilledShipments: billedShipmentIds.size,
+    expectedBillableShipments: pkgs(billable),
+    actualBilledShipments: pkgs(lines),
     expectedCharges,
     actualCharges,
     netInvoiceAmount,
@@ -154,10 +122,10 @@ export function computeReconciliation(
     billingAccuracy,
     reconciliationDifference,
     layers: {
-      operations: { shipments: shipments.length, billable: billable.length },
+      operations: { shipments: pkgs(shipments), billable: pkgs(billable) },
       pricing: { expectedCharges },
       billing: {
-        lines: lines.length,
+        lines: pkgs(lines),
         netAmount: actualCharges,
         duplicates: duplicates.length,
       },

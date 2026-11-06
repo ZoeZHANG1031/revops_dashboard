@@ -1,5 +1,6 @@
 import { RECOVERABLE_EXCEPTION_TYPES } from './exceptionRegistry'
 import { forecastComparability } from './forecastScope'
+import { computeBillingIntegrity } from './billingIntegrity'
 import { filterBillingLines, filterCosts, filterExceptions, filterInvoices, filterShipments } from '@/lib/filters'
 import { computeRecognizedRevenue } from '@/calc/recognizedRevenue'
 import { createCalcMemo, filterCacheKey } from '@/lib/memoCalc'
@@ -403,7 +404,7 @@ export const METRIC_REGISTRY: Record<MetricId, MetricMeta> = {
     name: 'Billing Accuracy',
     chineseName: '计费准确率',
     businessDefinition: 'Billed shipment count / billable shipment count.',
-    formula: 'Actual Billed Shipments / Expected Billable Shipments',
+    formula: 'Σ packages in billable lots billed exactly once with no Rate Mismatch / Missing Surcharge / Duplicate ÷ Σ billable packages (ship_date in range)',
     sourceTables: ['fact_shipment', 'fact_billing_line'],
     sourceColumns: ['billable', 'shipment_id'],
     calculationExample: '5299 / 5393 = 98.3%',
@@ -493,6 +494,17 @@ export interface SharedMetrics {
 
 const sharedMetricsMemo = createCalcMemo<SharedMetrics>(64)
 
+const paidCache = new WeakMap<object, Map<string, number>>()
+function paidByInvoiceIndex(data: DataStore): Map<string, number> {
+  let m = paidCache.get(data.payments)
+  if (!m) {
+    m = new Map()
+    for (const p of data.payments) m.set(p.invoice_id, (m.get(p.invoice_id) ?? 0) + p.amount)
+    paidCache.set(data.payments, m)
+  }
+  return m
+}
+
 export function computeSharedMetrics(
   data: DataStore,
   filters: GlobalFilters,
@@ -527,13 +539,14 @@ function computeSharedMetricsFresh(
       })
       .map((p) => p.amount),
   )
-  const overdueInvoices = invoices.filter((i) => i.status === 'Overdue')
-  const overdueAr = sumMoney(overdueInvoices.map((i) => i.net_amount))
   const openInvoices = invoices.filter((i) => i.status !== 'Paid')
-  const paidByInvoice = new Map<string, number>()
-  for (const p of data.payments) {
-    paidByInvoice.set(p.invoice_id, (paidByInvoice.get(p.invoice_id) ?? 0) + p.amount)
-  }
+  const paidByInvoice = paidByInvoiceIndex(data)
+  // Overdue AR = outstanding balance (net − payments) of invoices past due as of the snapshot
+  const overdueAr = sumMoney(
+    invoices
+      .filter((i) => i.status === 'Overdue')
+      .map((i) => money(Math.max(0, i.net_amount - (paidByInvoice.get(i.invoice_id) ?? 0)))),
+  )
   const accountsReceivable = sumMoney(
     openInvoices.map((i) => money(Math.max(0, i.net_amount - (paidByInvoice.get(i.invoice_id) ?? 0)))),
   )
@@ -563,31 +576,9 @@ function computeSharedMetricsFresh(
       .map((f) => f.forecast_recognized),
   )
 
-  // Expected charges for billable shipments (index rate cards — avoid per-shipment find)
-  const rateCardsByKey = new Map<string, typeof data.rateCards>()
-  for (const r of data.rateCards) {
-    const key = `${r.contract_id}|${r.service_type}|${r.region}`
-    const list = rateCardsByKey.get(key) ?? []
-    list.push(r)
-    rateCardsByKey.set(key, list)
-  }
-  let expectedCharges = 0
-  let billable = 0
-  for (const s of filterShipments(data, filters)) {
-    if (!s.billable) continue
-    billable += 1
-    const cards =
-      rateCardsByKey.get(`${s.contract_id}|${s.service_type}|${s.region}`) ?? []
-    const card = cards.find(
-      (r) => r.effective_from <= s.ship_date && r.effective_to >= s.ship_date,
-    )
-    if (!card) continue
-    let base = card.base_rate + s.weight_lbs * card.per_lb_rate
-    base *= 1 + (s.zone - 1) * 0.08 * card.zone_multiplier
-    expectedCharges +=
-      base + base * card.fuel_surcharge_pct + (s.is_remote ? card.remote_surcharge : 0)
-  }
-  expectedCharges = money(expectedCharges)
+  // Expected charges: billable lots re-rated with the shared rater (lib/pricing) — same function that billed them
+  const integrity = computeBillingIntegrity(data, filters)
+  const expectedCharges = integrity.expectedGross
 
   const exceptions = filterExceptions(data, filters)
   const unbilledExposure = sumMoney(
@@ -619,7 +610,6 @@ function computeSharedMetricsFresh(
   const contributionMargin = pct(contributionProfit, netBilledRevenue)
   const operatingProfit = money(contributionProfit - allocatedFixed)
 
-  const billed = new Set(lines.map((l) => l.shipment_id)).size
 
   const fcScope = forecastComparability(data, filters, scenario)
   const sameWindow =
@@ -669,7 +659,8 @@ function computeSharedMetricsFresh(
     allocatedFixed,
     operatingProfit,
     variableCost,
-    billingAccuracy: pct(billed, billable),
+    // Package-weighted: eligible billable packages billed exactly once with no rating defect
+    billingAccuracy: pct(integrity.correctlyBilledPackages, integrity.eligiblePackages),
     bookingsTcv,
     weightedPipeline,
   }

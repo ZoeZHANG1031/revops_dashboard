@@ -1,4 +1,5 @@
 import { filterBillingLines, filterShipments } from '@/lib/filters'
+import { pkgs } from '@/lib/pricing'
 import { money, pct, sumMoney } from '@/lib/money'
 import type { DataStore, GlobalFilters } from '@/types'
 import { computeRecognizedRevenue } from './recognizedRevenue'
@@ -63,7 +64,8 @@ export function computeSalesPipeline(data: DataStore) {
 }
 
 export function computeOperationalPipeline(data: DataStore, filters: GlobalFilters) {
-  const contracted = data.contracts.filter((c) => c.status === 'Active').length
+  // Distinct customers with an active contract (contracts have several versions over time)
+  const contracted = new Set(data.contracts.filter((c) => c.status === 'Active').map((c) => c.customer_id)).size
   const activeCustomers = new Set(
     filterShipments(data, filters).map((s) => s.customer_id),
   ).size
@@ -79,8 +81,8 @@ export function computeOperationalPipeline(data: DataStore, filters: GlobalFilte
   const stages = [
     { key: 'contracted', label: 'Contracted Customers', value: contracted, unit: 'count' as const },
     { key: 'active', label: 'Active Customers', value: activeCustomers, unit: 'count' as const },
-    { key: 'shipments', label: 'Shipment Volume', value: shipments.length, unit: 'count' as const },
-    { key: 'billable', label: 'Billable Shipments', value: billable.length, unit: 'count' as const },
+    { key: 'shipments', label: 'Shipment Volume (packages)', value: pkgs(shipments), unit: 'count' as const },
+    { key: 'billable', label: 'Billable Packages', value: pkgs(billable), unit: 'count' as const },
     { key: 'rated', label: 'Rated Charges', value: ratedCharges, unit: 'money' as const },
     { key: 'net', label: 'Net Billing', value: netBilling, unit: 'money' as const },
     { key: 'recognized', label: 'Recognized Revenue', value: recognized, unit: 'money' as const },
@@ -94,12 +96,12 @@ export function computeOperationalPipeline(data: DataStore, filters: GlobalFilte
     },
     {
       from: 'Shipments → Billable',
-      rate: pct(billable.length, shipments.length),
+      rate: pct(pkgs(billable), pkgs(shipments)),
       leakage: 'Failed deliveries under non-billable rules',
     },
     {
-      from: 'Billable → Billed Lines',
-      rate: pct(lines.length, billable.length),
+      from: 'Billable → Billed Packages',
+      rate: pct(pkgs(lines), pkgs(billable)),
       leakage: 'Missing billing / rating failures',
     },
     {
