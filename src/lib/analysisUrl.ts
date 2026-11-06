@@ -21,6 +21,8 @@ export interface AnalysisQuery {
   sourcePage?: string
   investigationId?: string
   toast?: string
+  /** Page-local portfolio focus, e.g. `band:Critical` or `driver:volume` (not sticky) */
+  portfolioFocus?: string
 }
 
 export type EntityType =
@@ -69,6 +71,7 @@ export function parseAnalysisSearch(search: string): AnalysisQuery {
     sourcePage: sp.get('fromPage') ?? undefined,
     investigationId: sp.get('guide') ?? undefined,
     toast: sp.get('toast') ?? undefined,
+    portfolioFocus: sp.get('focus') ?? undefined,
   }
 }
 
@@ -86,6 +89,7 @@ export function buildAnalysisSearch(
     sourcePage?: string | null
     investigationId?: string | null
     toast?: string | null
+    portfolioFocus?: string | null
   } = {},
 ): string {
   const sp = new URLSearchParams()
@@ -108,6 +112,7 @@ export function buildAnalysisSearch(
   if (extras.sourcePage) sp.set('fromPage', extras.sourcePage)
   if (extras.investigationId) sp.set('guide', extras.investigationId)
   if (extras.toast) sp.set('toast', extras.toast)
+  if (extras.portfolioFocus) sp.set('focus', extras.portfolioFocus)
   return sp.toString()
 }
 

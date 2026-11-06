@@ -86,6 +86,8 @@ export interface NavigateExtras {
   toast?: string | null
   /** Clear only temporary selection objects without wiping global filters */
   clearDrillContext?: boolean
+  /** Page-local focus for portfolio pages (`band:<Band>` · `driver:<key>`) — not carried forward */
+  portfolioFocus?: string | null
 }
 
 /** Snapshot of the analysis context before a cross-page jump — restored by navigateBack */
@@ -96,6 +98,8 @@ export interface NavPathEntry {
   localFilters: LocalAnalysisFilters
   highlightCustomerId: string | null
   scenario: 'Base' | 'Upside' | 'Downside'
+  /** Scroll offset of the main content area when leaving (restored by navigateBack) */
+  scrollTop?: number
 }
 
 const NAV_PATH_LIMIT = 8
@@ -143,6 +147,8 @@ interface AppContextValue {
   investigation: InvestigationState
   setInvestigation: (s: InvestigationState | ((prev: InvestigationState) => InvestigationState)) => void
   clearInvestigation: () => void
+  /** Clears breadcrumb path + investigation toast without changing filters */
+  clearNavContext: () => void
   dismissToast: () => void
   contextFeedback: string | null
   /** Drill-down path of previous pages (oldest first) */
@@ -539,6 +545,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
               localFilters,
               highlightCustomerId,
               scenario,
+              scrollTop: document.querySelector('main')?.scrollTop ?? 0,
             },
           ].slice(-NAV_PATH_LIMIT),
         )
@@ -567,6 +574,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         sourcePage: nextInv.sourcePage,
         investigationId: nextInv.id,
         toast: nextInv.toast,
+        portfolioFocus: extras.portfolioFocus ?? null,
       })
       navigate({ pathname: path, search: qs ? `?${qs}` : '' })
     },
@@ -598,6 +606,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setOpenEntity(null)
       setContextFeedback('Returned to previous analysis with its original filters')
       navigate({ pathname: entry.path, search: entry.search })
+      // Restore the reading position once the destination has rendered
+      const top = entry.scrollTop ?? 0
+      if (top > 0) {
+        let tries = 0
+        const restore = () => {
+          const main = document.querySelector('main')
+          if (!main) return
+          main.scrollTop = top
+          if (Math.abs(main.scrollTop - top) > 4 && tries++ < 20) requestAnimationFrame(restore)
+        }
+        requestAnimationFrame(restore)
+      }
     },
     [navPath, navigate],
   )
@@ -692,6 +712,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setInvestigationState((prev) => (typeof s === 'function' ? s(prev) : s))
     },
     clearInvestigation: () => {
+      setInvestigationState(DEFAULT_INVESTIGATION)
+      setContextFeedback(null)
+    },
+    clearNavContext: () => {
+      setNavPath([])
       setInvestigationState(DEFAULT_INVESTIGATION)
       setContextFeedback(null)
     },

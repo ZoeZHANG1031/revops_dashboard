@@ -37,10 +37,13 @@ export const HEALTH_BANDS: { band: HealthBand; min: number }[] = [
 /** Neutral placeholder used when a component has no evidence (disclosed, never silent) */
 export const HEALTH_MISSING_PLACEHOLDER = 55
 
-/** YoY package decline at or below this % triggers the Critical override (demo configuration) */
+/** YoY package decline at or below this % triggers the Critical risk-band override (demo configuration) */
 export const HEALTH_GATE_VOLUME_DECLINE_PCT = -30
-/** Score ceiling when the override fires (top of the Critical band) */
-export const HEALTH_GATE_CAP = 49
+/**
+ * Risk band floor when the override fires. The override changes the Risk Band only —
+ * the Health Score stays the raw weighted score (no artificial 49-point cap).
+ */
+export const HEALTH_GATE_BAND: HealthBand = 'Critical'
 
 /** Exception types that measure billing quality (customer-risk signals such as Volume Decline are NOT billing issues) */
 export const BILLING_QUALITY_TYPES: ReadonlySet<ExceptionType> = new Set<ExceptionType>([
@@ -93,7 +96,8 @@ export interface HealthInputs {
   weightedScore: number
   /** share of total weight backed by observed evidence (100 = complete) */
   scoreCoverage: number
-  override: { applied: boolean; rule: string | null; cap: number | null }
+  /** Risk-band override — never alters the numeric Health Score */
+  override: { applied: boolean; rule: string | null; band: HealthBand | null }
   exposure: { basis: 'Base Existing forecast' | 'Run-rate × 3 (no forecast)'; horizonStart: string; horizonEnd: string; amount: number }
 }
 
@@ -118,8 +122,14 @@ export interface CustomerHealthRow {
   volumeScore: number
   profitScore: number
   deliveryScore: number
+  /** Raw Health Score = Σ weight × component (0–100). Never capped by an override. */
   healthScore: number
+  /** Risk Band — band from the score, or the override band when an override rule fires */
   healthBand: HealthBand
+  /** Band implied by the raw score alone (differs from healthBand only when overridden) */
+  scoreBand: HealthBand
+  /** Why the Risk Band differs from the score band (null when no override) */
+  overrideReason: string | null
   dataCompleteness: number
   confidence: 'High' | 'Medium' | 'Low'
   /** Scenario stress factor by band (demo assumption, NOT a validated churn probability) */
@@ -380,11 +390,16 @@ function computeCustomerHealthFresh(
         100,
     )
 
-    // Override (separate from the weighted average): severe YoY volume collapse caps the score
+    // Override (separate from the score): severe YoY volume collapse forces the Critical Risk Band.
+    // The numeric Health Score is left as the raw weighted score.
     const severeDecline = volumeGrowthPct != null && volumeGrowthPct <= HEALTH_GATE_VOLUME_DECLINE_PCT
-    const overrideApplied = severeDecline && weightedScore > HEALTH_GATE_CAP
-    const healthScore = overrideApplied ? HEALTH_GATE_CAP : weightedScore
-    const healthBand = bandFromScore(healthScore)
+    const healthScore = weightedScore
+    const scoreBand = bandFromScore(healthScore)
+    const overrideApplied = severeDecline && scoreBand !== HEALTH_GATE_BAND
+    const healthBand: HealthBand = overrideApplied ? HEALTH_GATE_BAND : scoreBand
+    const overrideReason = overrideApplied
+      ? `Shipped packages ${volumeGrowthPct!.toFixed(1)}% YoY (≤ −${Math.abs(HEALTH_GATE_VOLUME_DECLINE_PCT)}%) → Risk Band set to ${HEALTH_GATE_BAND}; score ${healthScore} alone would be ${scoreBand}`
+      : null
 
     const observedCount = Object.values(observed).filter(Boolean).length
     const dataCompleteness = clampScore((observedCount / 5) * 100)
@@ -398,7 +413,7 @@ function computeCustomerHealthFresh(
 
     const drivers: string[] = []
     if (overrideApplied)
-      drivers.push(`Override: packages ${volumeGrowthPct!.toFixed(1)}% YoY ≤ −${Math.abs(HEALTH_GATE_VOLUME_DECLINE_PCT)}% (score capped at ${HEALTH_GATE_CAP})`)
+      drivers.push(`Override: packages ${volumeGrowthPct!.toFixed(1)}% YoY ≤ −${Math.abs(HEALTH_GATE_VOLUME_DECLINE_PCT)}% (Risk Band → ${HEALTH_GATE_BAND})`)
     if (observed.volume && volumeScore < 50) drivers.push('Volume trend weak')
     if (observed.delivery && deliveryScore < 55) drivers.push('Delivery performance pressure')
     if (observed.profitability && profitScore < 50) drivers.push('Contribution margin compressed')
@@ -445,6 +460,8 @@ function computeCustomerHealthFresh(
       deliveryScore,
       healthScore,
       healthBand,
+      scoreBand,
+      overrideReason,
       dataCompleteness,
       confidence,
       assumedLossProbability: stress,
@@ -487,8 +504,8 @@ function computeCustomerHealthFresh(
         scoreCoverage,
         override: {
           applied: overrideApplied,
-          rule: overrideApplied ? `YoY packages ≤ −${Math.abs(HEALTH_GATE_VOLUME_DECLINE_PCT)}% → score capped at ${HEALTH_GATE_CAP}` : null,
-          cap: overrideApplied ? HEALTH_GATE_CAP : null,
+          rule: overrideApplied ? `YoY packages ≤ −${Math.abs(HEALTH_GATE_VOLUME_DECLINE_PCT)}% → Risk Band ${HEALTH_GATE_BAND}` : null,
+          band: overrideApplied ? HEALTH_GATE_BAND : null,
         },
         exposure: {
           basis: forecastBasis ? 'Base Existing forecast' : 'Run-rate × 3 (no forecast)',

@@ -114,11 +114,19 @@ describe('No future information in scoring', () => {
 describe('Health Score is recomputable and tags match evidence', () => {
   const rows = computeCustomerHealth(data, filters)
 
-  it('Σ weight × component = weighted score; override is the only other adjustment', () => {
+  it('Σ weight × component = Health Score; override changes the Risk Band only (never the score)', () => {
     for (const h of rows) {
       const { ev } = evidenceFor(h.customerId)
       expect(recomputeWeightedScore(ev.health.components)).toBe(h.inputs.weightedScore)
-      expect(h.healthScore).toBe(h.inputs.override.applied ? h.inputs.override.cap : h.inputs.weightedScore)
+      expect(h.healthScore).toBe(h.inputs.weightedScore)
+      if (h.inputs.override.applied) {
+        expect(h.healthBand).toBe('Critical')
+        expect(h.scoreBand).not.toBe('Critical')
+        expect(h.overrideReason).toBeTruthy()
+      } else {
+        expect(h.healthBand).toBe(h.scoreBand)
+        expect(h.overrideReason).toBeNull()
+      }
     }
   }, 120_000)
 

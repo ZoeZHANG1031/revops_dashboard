@@ -94,13 +94,31 @@ export interface WatchlistRow {
   contributionMargin: number | null
   healthScore: number | null
   healthScoreChange: number | null
+  /** Risk Band (canonical Health band, including override) */
+  healthBand: HealthBand
+  /** Prior comparable-window Risk Band (null when no prior score) */
+  priorHealthBand: HealthBand | null
+  overrideReason: string | null
   primaryRiskSignal: string
   priority: ManagementPriority
   priorityScore: number
+  /** Transparent breakdown of priorityScore (points before the confidence multiplier) */
+  priorityFactors: PriorityFactors
+  /** Plain-language reason for the rank */
+  priorityReason: string
+  contributionProfit: number
   recommendedNextStep: string
   scenarioRevenueAtRisk: number
   riskTypes: RiskType[]
   dataConfidence: 'High' | 'Medium' | 'Low'
+}
+
+export interface PriorityFactors {
+  severity: number
+  size: number
+  deterioration: number
+  exposure: number
+  confidenceMultiplier: number
 }
 
 export interface HealthAttributionStep {
@@ -298,27 +316,27 @@ export function attributeHealthChange(
 
 function managementPriority(
   profile: CustomerRiskProfile,
-  cq: ClientQualityScore,
+  lowConfidence: boolean,
   scoreChange: number | null,
   maxRevenue: number,
-): { priority: ManagementPriority; score: number; nextStep: string } {
-  const revShare = maxRevenue > 0 ? profile.revenue / maxRevenue : 0
-  const bandSev =
-    cq.band === 'Critical' || profile.healthBand === 'Critical'
-      ? 4
-      : cq.band === 'At Risk' || profile.healthBand === 'At Risk'
-        ? 3
-        : cq.band === 'Watchlist' || profile.healthBand === 'Watchlist'
-          ? 2
-          : 1
+): { priority: ManagementPriority; score: number; nextStep: string; factors: PriorityFactors; reason: string } {
+  const revShare = maxRevenue > 0 ? Math.max(0, profile.revenue) / maxRevenue : 0
+  const band = profile.healthBand
+  const bandSev = band === 'Critical' ? 4 : band === 'At Risk' ? 3 : band === 'Watchlist' ? 2 : 1
   const deteriorate = scoreChange != null && scoreChange < -5 ? Math.min(3, Math.abs(scoreChange) / 5) : 0
   const exposure = Math.min(3, profile.scenarioRevenueAtRisk / Math.max(profile.revenue * 0.2, 1))
-  const conf =
-    cq.lowConfidence || profile.confidence === 'Low' ? 0.7 : profile.confidence === 'Medium' ? 0.85 : 1
-  const score = money((bandSev * 25 + revShare * 35 + deteriorate * 15 + exposure * 15) * conf)
+  const conf = lowConfidence || profile.confidence === 'Low' ? 0.7 : profile.confidence === 'Medium' ? 0.85 : 1
+  const factors: PriorityFactors = {
+    severity: money(bandSev * 25),
+    size: money(revShare * 35),
+    deterioration: money(deteriorate * 15),
+    exposure: money(exposure * 15),
+    confidenceMultiplier: conf,
+  }
+  const score = money((factors.severity + factors.size + factors.deterioration + factors.exposure) * conf)
 
   let priority: ManagementPriority
-  if (cq.band === 'Healthy' && (scoreChange == null || scoreChange >= -3) && profile.riskTypes.length === 0) {
+  if (band === 'Healthy' && (scoreChange == null || scoreChange >= -3) && profile.riskTypes.length === 0) {
     priority = 'Healthy'
   } else if (score >= 70 || (bandSev >= 3 && revShare >= 0.08)) {
     priority = 'High Priority'
@@ -329,6 +347,16 @@ function managementPriority(
   } else {
     priority = 'Healthy'
   }
+
+  const reasonBits = [
+    `${band} band (+${factors.severity.toFixed(0)})`,
+    `size ${(revShare * 100).toFixed(0)}% of largest client (+${factors.size.toFixed(0)})`,
+    scoreChange == null
+      ? 'no prior score'
+      : `health ${scoreChange >= 0 ? '+' : ''}${scoreChange} pts vs prior${factors.deterioration > 0 ? ` (+${factors.deterioration.toFixed(0)})` : ''}`,
+    `scenario exposure (+${factors.exposure.toFixed(0)})`,
+  ]
+  const reason = `${reasonBits.join(' · ')}${conf < 1 ? ` · × ${conf} confidence` : ''}`
 
   const primary = profile.riskTypes[0] ?? profile.topRiskDriver ?? 'Review account trajectory'
   const nextStep =
@@ -346,7 +374,7 @@ function managementPriority(
                 ? 'Confirm renewal timeline with Account Management'
                 : 'Review Client 360 diagnosis and evidence'
 
-  return { priority, score, nextStep }
+  return { priority, score, nextStep, factors, reason }
 }
 
 export interface ClientQualityPortfolio {
@@ -356,6 +384,8 @@ export interface ClientQualityPortfolio {
   scores: Map<string, ClientQualityScore>
   profiles: CustomerRiskProfile[]
   priorScores: Map<string, ClientQualityScore>
+  /** Prior comparable-window canonical Health rows (same customer IDs, real history) */
+  priorHealth: Map<string, CustomerHealthRow>
   comparisonLabel: string | null
 }
 
@@ -378,6 +408,7 @@ export function computeClientQualityPortfolio(
   }
 
   const priorScores = new Map<string, ClientQualityScore>()
+  const priorHealth = new Map<string, CustomerHealthRow>()
   let priorComparable = false
   if (window.prior) {
     priorComparable = true
@@ -389,19 +420,16 @@ export function computeClientQualityPortfolio(
     const priorRows = computeCustomerHealth(data, priorFilters, healthWeights)
     for (const r of priorRows) {
       priorScores.set(r.customerId, scoreClientQuality(r, { asOfDate: asOf }))
+      // Only customers with real activity in the prior window carry a prior score
+      if (r.revenue !== 0 || r.volume > 0) priorHealth.set(r.customerId, r)
     }
   }
 
+  // Canonical Risk Band = Health band (incl. override) — same definition as Risk & Retention,
+  // Customer Portfolio and Scenario Revenue Exposure. CQ 5-dimension score is a secondary lens.
   const active = profiles.filter((p) => p.revenue !== 0 || p.volume > 0)
-  const healthy = active.filter((p) => {
-    const s = scores.get(p.customerId)
-    return s?.band === 'Healthy' || (s?.score == null && p.healthBand === 'Healthy')
-  })
-  const atRisk = active.filter((p) => {
-    const s = scores.get(p.customerId)
-    const band = s?.band === 'Insufficient Data' ? p.healthBand : s?.band
-    return band != null && AT_RISK.includes(band as HealthBand)
-  })
+  const healthy = active.filter((p) => p.healthBand === 'Healthy')
+  const atRisk = active.filter((p) => AT_RISK.includes(p.healthBand))
 
   let newlyFlagged: number | null = null
   let improving: number | null = null
@@ -409,34 +437,16 @@ export function computeClientQualityPortfolio(
     newlyFlagged = 0
     improving = 0
     for (const p of active) {
-      const cur = scores.get(p.customerId)
-      const prior = priorScores.get(p.customerId)
-      const curRisk =
-        cur?.band === 'At Risk' ||
-        cur?.band === 'Critical' ||
-        (cur?.band === 'Insufficient Data' && AT_RISK.includes(p.healthBand))
-      const priorRisk =
-        prior?.band === 'At Risk' ||
-        prior?.band === 'Critical' ||
-        (prior == null && false)
-      if (curRisk && !priorRisk && prior != null && prior.band !== 'Insufficient Data') {
-        newlyFlagged += 1
-      }
-      if (
-        cur?.score != null &&
-        prior?.score != null &&
-        cur.score - prior.score >= 5
-      ) {
-        improving += 1
-      }
+      const prior = priorHealth.get(p.customerId)
+      if (!prior) continue
+      if (AT_RISK.includes(p.healthBand) && !AT_RISK.includes(prior.healthBand)) newlyFlagged += 1
+      if (p.healthScore - prior.healthScore >= 5) improving += 1
     }
   }
 
   // Revenue Exposure = current-period revenue of at-risk bands (NOT guaranteed loss; NOT scenario RaR)
   const revenueExposure = sumMoney(atRisk.map((p) => p.revenue))
-  const scored = active
-    .map((p) => scores.get(p.customerId)?.score)
-    .filter((s): s is number => s != null)
+  const scored = active.map((p) => p.healthScore)
   const avgHealthScore =
     scored.length === 0 ? null : money(scored.reduce((a, b) => a + b, 0) / scored.length)
 
@@ -444,10 +454,14 @@ export function computeClientQualityPortfolio(
   const watchlist: WatchlistRow[] = active
     .map((p) => {
       const cq = scores.get(p.customerId)!
-      const prior = priorScores.get(p.customerId)
-      const scoreChange =
-        cq.score != null && prior?.score != null ? money(cq.score - prior.score) : null
-      const { priority, score, nextStep } = managementPriority(p, cq, scoreChange, maxRevenue)
+      const prior = priorHealth.get(p.customerId)
+      const scoreChange = prior ? money(p.healthScore - prior.healthScore) : null
+      const { priority, score, nextStep, factors, reason } = managementPriority(
+        p,
+        p.confidence === 'Low',
+        scoreChange,
+        maxRevenue,
+      )
       return {
         customerId: p.customerId,
         customerName: p.customerName,
@@ -456,15 +470,21 @@ export function computeClientQualityPortfolio(
         revenueGrowth: p.revenueGrowth,
         shipmentGrowth: p.volumeGrowth,
         contributionMargin: p.contributionMargin,
-        healthScore: cq.score,
+        contributionProfit: p.contributionProfit,
+        healthScore: p.healthScore,
         healthScoreChange: scoreChange,
-        primaryRiskSignal: p.riskTypes[0] ?? p.topRiskDriver ?? 'None',
+        healthBand: p.healthBand,
+        priorHealthBand: prior?.healthBand ?? null,
+        overrideReason: p.overrideReason,
+        primaryRiskSignal: p.riskTypes[0] ?? 'None',
         priority,
         priorityScore: score,
+        priorityFactors: factors,
+        priorityReason: reason,
         recommendedNextStep: nextStep,
         scenarioRevenueAtRisk: p.scenarioRevenueAtRisk,
         riskTypes: p.riskTypes,
-        dataConfidence: cq.lowConfidence ? 'Low' : p.confidence,
+        dataConfidence: cq.lowConfidence && p.confidence !== 'High' ? 'Low' : p.confidence,
       }
     })
     .sort(
@@ -498,13 +518,14 @@ export function computeClientQualityPortfolio(
       priorComparable,
       priorLabel: window.prior?.label ?? null,
       revenueExposureNote:
-        'Sum of current-period Net Billing for clients in At Risk / Critical bands. Not guaranteed loss; distinct from Scenario Revenue at Risk.',
+        'Revenue currently billed by At Risk / Critical clients in this window — the revenue base exposed to churn risk. It is NOT an expected or forecast loss; Scenario Revenue at Risk (band stress factor × forward forecast) is the separate stress estimate.',
     },
     watchlist,
     matrix,
     scores,
     profiles,
     priorScores,
+    priorHealth,
     comparisonLabel: window.prior ? `${window.current.label} vs ${window.prior.label} (${window.basisShort})` : null,
   }
 }

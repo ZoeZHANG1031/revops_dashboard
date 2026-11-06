@@ -11,14 +11,27 @@ export function Collapsible({
   defaultOpen = false,
   children,
   actions,
+  id,
+  open: openProp,
+  onToggle,
 }: {
   title: string
   subtitle?: string
   defaultOpen?: boolean
   children: ReactNode
   actions?: ReactNode
+  id?: string
+  /** Controlled mode (optional): parent owns open state */
+  open?: boolean
+  onToggle?: (open: boolean) => void
 }) {
-  const [open, setOpen] = useState(defaultOpen)
+  const [openState, setOpenState] = useState(defaultOpen)
+  const open = openProp ?? openState
+  const setOpen = (fn: (v: boolean) => boolean) => {
+    const next = fn(open)
+    if (openProp === undefined) setOpenState(next)
+    onToggle?.(next)
+  }
   const nested = useContext(CardNestingContext)
   const header = (
     <div className={`flex items-center justify-between gap-3 ${nested ? 'py-2' : 'px-5 py-3.5'}`}>
@@ -42,14 +55,14 @@ export function Collapsible({
   )
   if (nested) {
     return (
-      <div className="mt-3 border-t border-[#e8eeea]">
+      <div className="mt-3 border-t border-[#e8eeea]" id={id}>
         {header}
         {open && <div className="pt-1">{children}</div>}
       </div>
     )
   }
   return (
-    <section className="card-surface overflow-hidden">
+    <section className="card-surface overflow-hidden scroll-mt-4" id={id}>
       {header}
       {open && (
         <div className="border-t border-[#e8eeea] px-5 py-4">

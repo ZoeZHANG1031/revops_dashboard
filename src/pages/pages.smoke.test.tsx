@@ -68,7 +68,8 @@ function renderAt(path: string) {
 describe('page render smoke', { timeout: 120000 }, () => {
   it.each([
     ['/company', 'How the Business Works'],
-    ['/executive', 'Action Priority'],
+    ['/executive', 'Top 5 Management Priorities'],
+    ['/customer-360', 'Which health dimensions help or hurt?'],
     ['/pipeline', 'Open Pipeline by Stage'],
     ['/lifecycle', 'Operational Revenue Lifecycle'],
     ['/reconciliation', 'Reconciliation Bridge'],
@@ -76,9 +77,9 @@ describe('page render smoke', { timeout: 120000 }, () => {
     ['/forecasting', 'Revenue Forecast Trend'],
     ['/forecasting/scenarios', 'Scenario Drivers'],
     ['/forecasting/gap', 'What Would Close the Gap?'],
-    ['/customers', 'Customer Portfolio Risk Matrix'],
-    ['/customers/risk', 'At-Risk & Critical Customers'],
-    ['/customers/growth', 'Growth & Expansion Candidates'],
+    ['/customers', 'Which large clients are unhealthy?'],
+    ['/customers/risk', 'Where is at-risk revenue concentrated?'],
+    ['/customers/growth', 'How far is the forecast from target?'],
     ['/profitability/unit', 'Unit Stack by Dimension'],
     ['/sales-compensation', 'Commission Status Breakdown'],
     ['/sales-compensation/audit', 'Commission Transaction Audit'],
@@ -92,7 +93,30 @@ describe('page render smoke', { timeout: 120000 }, () => {
 
   it('root redirects to executive command center', () => {
     renderAt('/')
-    expect(screen.getAllByText('Action Priority').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Forecast Variance Bridge').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Top 5 Management Priorities').length).toBeGreaterThan(0)
+  })
+
+  it('Executive keeps finance first and does not repeat the full Client Quality watchlist', () => {
+    renderAt('/executive')
+    expect(screen.getAllByText('Actual vs Existing Customer Forecast').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Forecast Variance Bridge').length).toBeGreaterThan(0)
+    expect(screen.queryByText('Priority watchlist')).toBeNull()
+    expect(screen.getAllByText('Client Quality').length).toBeGreaterThan(0)
+    fireEvent.click(screen.getAllByText('Client Quality')[0])
+    expect(screen.getAllByText('Priority watchlist').length).toBeGreaterThan(0)
+  })
+
+  it('Client 360 Back to Portfolio returns to the full portfolio (customer filter cleared)', () => {
+    renderAt('/customers')
+    const tables = [...document.querySelectorAll('table')]
+    const watchlist = tables[tables.length - 1]
+    fireEvent.click(watchlist.querySelector('tbody tr') as HTMLElement)
+    expect(screen.getAllByText('Which health dimensions help or hurt?').length).toBeGreaterThan(0)
+    fireEvent.click(screen.getByText('← Back to Portfolio'))
+    expect(screen.getAllByText('Priority watchlist').length).toBeGreaterThan(0)
+    const after = [...document.querySelectorAll('table')]
+    expect(after[after.length - 1].querySelectorAll('tbody tr').length).toBeGreaterThan(1)
   })
 
   it('legacy unit-economics redirects to profitability/unit', () => {
@@ -108,9 +132,9 @@ describe('page render smoke', { timeout: 120000 }, () => {
     expect(screen.getByText('Recognition → Collection')).toBeTruthy()
   })
 
-  it('path 2: Executive → Billing risk → Reconciliation → exception trace → source record', () => {
+  it('path 2: Executive insight → Reconciliation → exception trace → source record', () => {
     renderAt('/executive')
-    fireEvent.click(screen.getByText('Billing / Leakage Risk'))
+    fireEvent.click(screen.getByText('Open Reconciliation'))
     expect(screen.getAllByText('Exception Detail').length).toBeGreaterThan(0)
     const rows = document.querySelectorAll('table tbody tr')
     const excRow = [...rows].find((r) => /^EXC|^EX-|^E\d/.test(r.textContent ?? '') || (r.textContent ?? '').includes('Missing'))

@@ -1,4 +1,4 @@
-import { useLocation } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useApp } from '@/context/AppContext'
 import { pageMeta } from '@/lib/icons'
 
@@ -19,6 +19,7 @@ function pageLabel(path: string): string {
 
 export function InvestigationBreadcrumb() {
   const location = useLocation()
+  const navigate = useNavigate()
   const {
     filters,
     data,
@@ -26,9 +27,9 @@ export function InvestigationBreadcrumb() {
     setLocalFilters,
     investigation,
     clearInvestigation,
+    clearNavContext,
     clearSelection,
     setFilters,
-    navigateWithContext,
     contextFeedback,
     dismissToast,
     navPath,
@@ -181,14 +182,18 @@ export function InvestigationBreadcrumb() {
             ))}
           </>
         )}
-        {(navPath.length > 0 || investigation.id) && (
+        {(navPath.length > 0 || investigation.id || crumbs.length > 0) && (
           <button
             type="button"
             className="ml-auto text-[11px] text-ink-muted hover:text-ink"
             onClick={() => {
-              clearInvestigation()
-              navigateWithContext('/executive')
+              // Clear residual breadcrumb / investigation without pushing another trail entry
+              clearNavContext()
+              setFilters({ ...filters, customerIds: [], metros: [], regions: [], serviceTypes: [] })
+              clearSelection()
+              if (location.pathname !== '/executive') navigate('/executive')
             }}
+            title="Clear investigation context and return to Executive"
           >
             Exit
           </button>

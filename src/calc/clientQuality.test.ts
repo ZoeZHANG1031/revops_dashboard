@@ -43,7 +43,7 @@ describe('Client Quality Intelligence', () => {
     expect(p.kpis.activeClients).toBeGreaterThan(0)
     expect(p.kpis.clientsAtRisk).toBeLessThanOrEqual(p.kpis.activeClients)
     expect(p.kpis.healthyClients + p.kpis.clientsAtRisk).toBeLessThanOrEqual(p.kpis.activeClients + p.profiles.length)
-    expect(p.kpis.revenueExposureNote.toLowerCase()).toContain('not guaranteed')
+    expect(p.kpis.revenueExposureNote.toLowerCase()).toContain('not an expected')
     // Newly flagged / improving are null when no prior, else non-negative
     if (!p.kpis.priorComparable) {
       expect(p.kpis.newlyFlaggedClients).toBeNull()

@@ -10,7 +10,7 @@
 import { computeArSnapshot, invoiceOutstanding, isOverdueInvoice, paidByInvoiceAsOf } from '@/calc/arSnapshot'
 import {
   HEALTH_BANDS,
-  HEALTH_GATE_CAP,
+  HEALTH_GATE_BAND,
   HEALTH_GATE_VOLUME_DECLINE_PCT,
   HEALTH_MISSING_PLACEHOLDER,
   HEALTH_RULES,
@@ -94,13 +94,53 @@ export interface DimensionDelta {
   delta: number
 }
 
+/** One health component classified by its actual score contribution */
+export interface DiagnosisDriver {
+  key: ComponentKey
+  name: string
+  score: number
+  /** Points this component takes off 100 (weight × (100 − score)) */
+  shortfall: number
+  /** Points this component adds above a neutral 60 (weight × (score − 60)); negative = drag */
+  netEffect: number
+  detail: string
+}
+
+/**
+ * Semantically separated diagnosis. Only `negative` drivers may be described as
+ * the reason a score is low; only `positive` drivers as the reason it is high.
+ * `alerts` are rule-based risk flags — reported, never cited as a cause of health.
+ */
+export interface CustomerDiagnosis {
+  positive: DiagnosisDriver[]
+  negative: DiagnosisDriver[]
+  neutral: DiagnosisDriver[]
+  alerts: { id: ComponentKey; label: string; detail: string }[]
+  overrideReason: string | null
+  headline: string
+  /** Single recommended next action (top evidence-backed action) */
+  nextAction: string | null
+}
+
+/** Component score thresholds for driver classification (demo configuration) */
+export const DIAGNOSIS_RULES = {
+  /** score ≥ this → positive driver */
+  positiveScore: 80,
+  /** score < this AND shortfall ≥ negativeMinShortfall → negative driver */
+  negativeScore: 60,
+  negativeMinShortfall: 3,
+  neutralAnchor: 60,
+} as const
+
 export interface CustomerEvidence {
   window: CustomerComparisonWindow
   asOf: string
   conclusion: string
+  diagnosis: CustomerDiagnosis
   health: {
     score: number
     band: CustomerHealthRow['healthBand']
+    scoreBand: CustomerHealthRow['scoreBand']
     weightedScore: number
     coverage: number
     provisional: boolean
@@ -556,37 +596,104 @@ export function buildCustomerEvidence(args: {
     validated: false,
   }
 
-  // ---- One-sentence conclusion from the numbers
-  const main = risks.filter((r) => r.status === 'Confirmed').slice(0, 2)
-  const minor = components.filter((c) => c.observed && c.shortfall < 3).map((c) => c.name.split(' (')[0].toLowerCase())
-  const describe = (r: RiskEvidenceRow) =>
-    r.id === 'volume'
-      ? `shipped packages fell ${Math.abs(inp.volumeGrowthPct ?? 0).toFixed(1)}% YoY`
-      : r.id === 'profitability'
-        ? `contribution margin is ${cmNow?.toFixed(1)}%${cmNow != null && cmNow < RISK_RULES.marginFloorPct ? ` (below the ${RISK_RULES.marginFloorPct}% demo floor)` : ''}`
-        : r.id === 'payment'
-          ? `${formatCurrency(ar.overdueAr, true)} is overdue`
-          : r.id === 'billing'
-            ? `${inp.billingCases.length} billing cases are open`
-            : `on-time delivery is ${inp.onTimePct?.toFixed(1)}%`
-  const conclusion = main.length
-    ? `${h.customerName} is ${h.healthBand} (${h.healthScore}/100) mainly because ${main.map(describe).join(' and ')}${minor.length ? `; ${minor.join(' and ')} ${minor.length === 1 ? 'is' : 'are'} not material drivers` : ''}.`
-    : `${h.customerName} is ${h.healthBand} (${h.healthScore}/100); no risk rule is met in this window.`
+  // ---- Diagnosis: classify components by their real score contribution
+  const describeComponent = (c: HealthComponentRow): string => {
+    switch (c.key) {
+      case 'volume':
+        return inp.volumeGrowthPct == null ? 'volume trend not comparable' : `shipped packages ${sPct(inp.volumeGrowthPct)} YoY`
+      case 'delivery':
+        return inp.onTimePct == null ? 'no shipments' : `on-time delivery ${inp.onTimePct.toFixed(1)}%`
+      case 'profitability':
+        return cmNow == null ? 'margin unavailable' : `contribution margin ${cmNow.toFixed(1)}%`
+      case 'payment':
+        return inp.overdueInvoiceCount === 0
+          ? `no overdue invoices (${inp.invoiceCount} issued)`
+          : `${inp.overdueInvoiceCount} of ${inp.invoiceCount} invoices overdue`
+      default:
+        return inp.billingCases.length === 0
+          ? 'no open billing cases'
+          : `${inp.billingCases.length} open billing case${inp.billingCases.length === 1 ? '' : 's'}`
+    }
+  }
+  const toDriver = (c: HealthComponentRow): DiagnosisDriver => ({
+    key: c.key,
+    name: c.name.split(' (')[0],
+    score: c.score,
+    shortfall: c.shortfall,
+    netEffect: r1(c.weight * (c.score - DIAGNOSIS_RULES.neutralAnchor)),
+    detail: describeComponent(c),
+  })
+  const observedComps = components.filter((c) => c.observed)
+  const alertedKeys = new Set(all.filter((r) => r.status === 'Confirmed').map((r) => r.id))
+  // A component with an active risk alert is never presented as a strength, even if its score is high
+  const positive = observedComps
+    .filter((c) => c.score >= DIAGNOSIS_RULES.positiveScore && !alertedKeys.has(c.key))
+    .map(toDriver)
+    .sort((a, b) => b.netEffect - a.netEffect)
+  const negative = observedComps
+    .filter((c) => c.score < DIAGNOSIS_RULES.negativeScore && c.shortfall >= DIAGNOSIS_RULES.negativeMinShortfall)
+    .map(toDriver)
+    .sort((a, b) => b.shortfall - a.shortfall)
+  const neutral = components
+    .filter((c) => !positive.some((p) => p.key === c.key) && !negative.some((n) => n.key === c.key))
+    .map((c) => (c.observed ? toDriver(c) : { ...toDriver(c), detail: 'insufficient evidence (neutral placeholder)' }))
+  const alerts = all
+    .filter((r) => r.status === 'Confirmed')
+    .map((r) => ({ id: r.id, label: r.risk, detail: `${r.current} (${r.change})` }))
+
+  const lowBand = h.healthBand === 'At Risk' || h.healthBand === 'Critical'
+  const list = (xs: DiagnosisDriver[]) => xs.slice(0, 2).map((d) => `${d.name.toLowerCase()} (${d.detail})`).join(' and ')
+  const scorePart = `${h.customerName} scores ${h.healthScore}/100`
+  let headline: string
+  if (h.inputs.override.applied) {
+    headline = `${scorePart} but is in the ${h.healthBand} Risk Band by override: ${h.overrideReason}.`
+  } else if (lowBand) {
+    headline = negative.length
+      ? `${scorePart} (${h.healthBand}); the largest score drags are ${list(negative)}.`
+      : `${scorePart} (${h.healthBand}); no single component is a material drag — weakness is spread across components.`
+  } else if (h.healthBand === 'Watchlist') {
+    headline = negative.length
+      ? `${scorePart} (Watchlist), held back by ${list(negative)}${positive.length ? `; supported by ${list(positive)}` : ''}.`
+      : `${scorePart} (Watchlist) with no single material drag${positive.length ? `; supported by ${list(positive)}` : ''}.`
+  } else {
+    headline = positive.length
+      ? `${scorePart} (Healthy), supported by ${list(positive)}.`
+      : `${scorePart} (Healthy).`
+  }
+  const nonDriverAlerts = alerts.filter((a) => !negative.some((n) => n.key === a.id))
+  if (nonDriverAlerts.length) {
+    headline += ` Risk alert${nonDriverAlerts.length > 1 ? 's' : ''} to monitor: ${nonDriverAlerts
+      .slice(0, 2)
+      .map((a) => a.label.toLowerCase())
+      .join(', ')}.`
+  }
+  const diagnosis: CustomerDiagnosis = {
+    positive,
+    negative,
+    neutral,
+    alerts,
+    overrideReason: h.overrideReason,
+    headline,
+    nextAction: actions[0] ? `${actions[0].title} — ${actions[0].owner}` : null,
+  }
+  const conclusion = headline
 
   return {
     window: win,
     asOf,
     conclusion,
+    diagnosis,
     health: {
       score: h.healthScore,
       band: h.healthBand,
+      scoreBand: h.scoreBand,
       weightedScore: inp.weightedScore,
       coverage: inp.scoreCoverage,
       provisional: inp.scoreCoverage < 100,
       override: inp.override,
       components,
       bandRule: HEALTH_BANDS.map((b, i) => (b.min > 0 ? `${b.band} ≥ ${b.min}` : `${b.band} < ${HEALTH_BANDS[i - 1]?.min ?? 50}`)).join(' · '),
-      missingRule: `Missing component → neutral placeholder ${HEALTH_MISSING_PLACEHOLDER}, shown as "Insufficient evidence"; score marked Provisional below 100% coverage. Override: YoY packages ≤ ${thr(HEALTH_GATE_VOLUME_DECLINE_PCT)}% caps the score at ${HEALTH_GATE_CAP}.`,
+      missingRule: `Missing component → neutral placeholder ${HEALTH_MISSING_PLACEHOLDER}, shown as "Insufficient evidence"; score marked Provisional below 100% coverage. Override: YoY packages ≤ ${thr(HEALTH_GATE_VOLUME_DECLINE_PCT)}% sets the Risk Band to ${HEALTH_GATE_BAND} (the score itself is not changed).`,
     },
     revenue: {
       field: 'Net Billing',
@@ -645,7 +752,7 @@ export function buildCustomerEvidence(args: {
   }
 }
 
-/** Sum of Σ weight × component — must equal the weighted score (before override) within rounding */
+/** Sum of Σ weight × component — must equal the Health Score within rounding */
 export function recomputeWeightedScore(components: HealthComponentRow[]): number {
   return Math.max(0, Math.min(100, Math.round(sumMoney(components.map((c) => c.weight * c.score)))))
 }

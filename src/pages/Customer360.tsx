@@ -4,6 +4,9 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  LabelList,
+  Line,
+  LineChart,
   ReferenceArea,
   ReferenceLine,
   ResponsiveContainer,
@@ -26,10 +29,11 @@ import { buildCustomerRiskProfile } from '@/calc/customerRisk'
 import { computeCustomerCommission } from '@/calc/salesCompensation'
 import { FloatingWaterfall } from '@/components/charts/FloatingWaterfall'
 import { ClientQualityDimensionBars } from '@/components/revops/ClientQualitySummary'
+import { BandBadge, KpiStrip } from '@/components/revops/PortfolioVisuals'
+import { customerHealthTrend } from '@/calc/portfolioVisuals'
 import { ChartCard } from '@/components/common/ChartCard'
 import { Collapsible } from '@/components/common/Collapsible'
 import { DataTable } from '@/components/common/DataTable'
-import { DrilldownLink } from '@/components/common/DrilldownLink'
 import { PageHeader } from '@/components/common/PageHeader'
 import { ModuleSubNav } from '@/components/layout/ModuleSubNav'
 import { useApp, type NavigateExtras } from '@/context/AppContext'
@@ -37,19 +41,27 @@ import { exportToCsv } from '@/lib/export'
 import { CUSTOMER_NAV } from '@/lib/icons'
 import { formatCurrency, formatCurrencyPrecise, formatNumber, formatPercent } from '@/lib/money'
 
-const SECTIONS = [
-  { id: 'c360-score', label: 'Score breakdown' },
-  { id: 'c360-volume', label: 'What changed' },
-  { id: 'c360-margin', label: 'Why it changed' },
-  { id: 'c360-exposure', label: 'What is at risk' },
-  { id: 'c360-account', label: 'Actions & account' },
-] as const
-
-const BAND_TONE: Record<string, string> = {
-  Healthy: 'bg-[#e8f5ee] text-success',
-  Watchlist: 'bg-amber-50 text-amber-800',
-  'At Risk': 'bg-orange-50 text-orange-800',
-  Critical: 'bg-red-50 text-danger',
+type SectionKey = 'change' | 'calc' | 'detail' | 'billing' | 'delivery' | 'actions'
+/** Evidence anchors → the expandable section that contains them */
+const ANCHOR_SECTION: Record<string, SectionKey> = {
+  'c360-score': 'calc',
+  'c360-cq': 'calc',
+  'c360-volume': 'detail',
+  'c360-bridge': 'detail',
+  'c360-margin': 'detail',
+  'c360-billing': 'billing',
+  'c360-payment': 'billing',
+  'c360-delivery': 'delivery',
+  'c360-exposure': 'delivery',
+  'c360-account': 'actions',
+}
+const SECTIONS_CLOSED: Record<SectionKey, boolean> = {
+  change: false,
+  calc: false,
+  detail: false,
+  billing: false,
+  delivery: false,
+  actions: false,
 }
 
 interface DemoAction {
@@ -77,8 +89,18 @@ const signedNum = (v: number | null) =>
   v == null ? 'N/A' : `${v > 0 ? '+' : v < 0 ? '−' : ''}${formatNumber(Math.abs(v))}`
 
 export function Customer360() {
-  const { data, filters, setFilters, healthWeights, navigateWithContext, highlightCustomerId, setHighlightCustomerId } =
-    useApp()
+  const {
+    data,
+    filters,
+    setFilters,
+    healthWeights,
+    navigateWithContext,
+    navigateBack,
+    navPath,
+    highlightCustomerId,
+    setHighlightCustomerId,
+  } = useApp()
+  const [sections, setSections] = useState<Record<SectionKey, boolean>>(SECTIONS_CLOSED)
   const [newActionTitle, setNewActionTitle] = useState('')
   const [demoActions, setDemoActions] = useState<DemoAction[]>([])
   const [showAllMetros, setShowAllMetros] = useState(false)
@@ -116,6 +138,46 @@ export function Customer360() {
     const currentCq = scoreClientQuality(health, { asOfDate: data.meta.as_of_date })
     return attributeHealthChange(priorCq, currentCq)
   }, [customerId, health, data, filters, custFilters, healthWeights])
+  const priorHealth = useMemo(() => {
+    if (!customerId) return null
+    const window = customerComparisonWindow(data, filters)
+    if (!window.prior) return null
+    const row = computeCustomerHealth(
+      data,
+      { ...custFilters, startPeriod: window.prior.startPeriod, endPeriod: window.prior.endPeriod },
+      healthWeights,
+    )[0]
+    return row && (row.revenue !== 0 || row.volume > 0) ? row : null
+  }, [customerId, data, filters, custFilters, healthWeights])
+  const trend = useMemo(
+    () => (customerId ? customerHealthTrend(data, filters, customerId, healthWeights, 9) : []),
+    [data, filters, customerId, healthWeights],
+  )
+  const scoreAttribution = useMemo(() => {
+    if (!health || !priorHealth) return []
+    const w = health.inputs.weights
+    const parts = [
+      ['volume', 'Volume', w.volumeTrend, health.volumeScore, priorHealth.volumeScore],
+      ['delivery', 'Delivery', w.deliveryPerformance, health.deliveryScore, priorHealth.deliveryScore],
+      ['profitability', 'Profitability', w.profitability, health.profitScore, priorHealth.profitScore],
+      ['payment', 'Payment', w.paymentBehavior, health.paymentScore, priorHealth.paymentScore],
+      ['billing', 'Billing quality', w.customerIssues, health.issueScore, priorHealth.issueScore],
+    ] as const
+    const steps: { key: string; label: string; shortLabel: string; amount: number }[] = [
+      { key: 'prior', label: 'Prior Health Score', shortLabel: 'Prior', amount: priorHealth.healthScore },
+    ]
+    let running = priorHealth.healthScore
+    for (const [key, label, wt, cur, pri] of parts) {
+      const d = Math.round(wt * (cur - pri) * 10) / 10
+      if (Math.abs(d) < 0.05) continue
+      steps.push({ key, label, shortLabel: label.split(' ')[0], amount: d })
+      running += d
+    }
+    const residual = Math.round((health.healthScore - running) * 10) / 10
+    if (Math.abs(residual) >= 0.05) steps.push({ key: 'rounding', label: 'Rounding', shortLabel: 'Rounding', amount: residual })
+    steps.push({ key: 'current', label: 'Current Health Score', shortLabel: 'Current', amount: health.healthScore })
+    return steps
+  }, [health, priorHealth])
   const profile = useMemo(() => (health ? buildCustomerRiskProfile(health, data, filters) : null), [health, data, filters])
   const revBridge = useMemo(
     () => (customerId ? computeCustomerRevenueBridge(data, filters, customerId) : null),
@@ -152,12 +214,29 @@ export function Customer360() {
   const cust = data.customers.find((c) => c.customer_id === customerId)
   const brands = data.brands?.filter((b) => b.customer_id === customerId) ?? []
 
+  const openSection = (key: SectionKey, anchor: string) => {
+    setSections((s) => ({ ...s, [key]: true }))
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => document.getElementById(anchor)?.scrollIntoView({ behavior: 'smooth', block: 'start' })),
+    )
+  }
   const go = (l: EvidenceLink) => {
     if (l.path.startsWith('#')) {
-      document.getElementById(l.path.slice(1))?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      const anchor = l.path.slice(1)
+      openSection(ANCHOR_SECTION[anchor] ?? 'detail', anchor)
       return
     }
     navigateWithContext(l.path, l.extras as NavigateExtras)
+  }
+  /** Return to the portfolio page we came from (filters + scroll restored); otherwise open the full portfolio */
+  const backToPortfolio = () => {
+    const portfolioPages = ['/customers', '/customers/risk', '/customers/growth', '/executive']
+    const last = navPath[navPath.length - 1]
+    if (last && portfolioPages.includes(last.path)) {
+      navigateBack()
+      return
+    }
+    navigateWithContext('/customers', { customerId: null, highlightCustomerId: customerId, sourcePage: '/customer-360' })
   }
 
   if (!customerId || !cust || !health || !profile || !ev) {
@@ -222,20 +301,31 @@ export function Customer360() {
 
   const priorLabel = ev.window.prior?.label ?? 'N/A'
   const metroRows = showAllMetros ? ev.volume.byMetro : selectMetroRows(ev.volume.byMetro)
+  const dx = ev.diagnosis
+  const scoreChange = priorHealth ? health.healthScore - priorHealth.healthScore : null
+  const topAction = ev.actions[0] ?? null
+  const driverTone = (key: string) =>
+    dx.negative.some((d) => d.key === key) ? 'negative' : dx.positive.some((d) => d.key === key) ? 'positive' : 'neutral'
+  const TONE_FILL = { negative: '#C44536', positive: '#2F7D62', neutral: '#A8B5AF' } as const
+  const monthly = ev.volume.monthly.filter((m) => m.segment !== 'gap')
+  const trendMin = Math.max(0, Math.min(40, Math.floor((Math.min(...trend.map((t) => t.score), 100) - 5) / 10) * 10))
 
   return (
     <div className="space-y-4">
       <ModuleSubNav items={CUSTOMER_NAV} />
       <PageHeader
         path="/customer-360"
-        scope="Risk evidence · score breakdown · next actions"
+        title={cust.customer_name}
+        scope={`${cust.segment} · ${profile.industry} · ${ev.window.current.label} vs ${priorLabel}`}
         actions={
           <div className="flex flex-wrap gap-2">
-            <DrilldownLink
-              to="/customers"
-              label="Back to Portfolio"
-              onClick={() => navigateWithContext('/customers', { highlightCustomerId: customerId, sourcePage: '/customer-360' })}
-            />
+            <button
+              type="button"
+              className="rounded-lg border border-[#dce6df] bg-white px-3 py-1.5 text-xs font-medium text-forest hover:border-brand-400"
+              onClick={backToPortfolio}
+            >
+              ← Back to Portfolio
+            </button>
             <button type="button" className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium" onClick={exportSummary}>
               Export Summary
             </button>
@@ -243,161 +333,288 @@ export function Customer360() {
         }
       />
 
-      {/* 1 · Account status */}
+      {/* Status · one-sentence conclusion · one next action */}
       <section className="card-surface p-4 sm:p-5" id="c360-status" aria-label="Account status">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h3 className="text-xl font-semibold text-ink">{cust.customer_name}</h3>
-            {filters.customerIds.length === 0 && (
-              <button type="button" className="text-[11px] text-forest underline" onClick={() => selectCustomer(customerId)}>
-                Pin this customer in the global Customer filter
-              </button>
-            )}
-            <p className="mt-1 text-xs text-ink-muted">
-              {cust.segment} · {profile.industry} · Account owner {cust.account_owner}
-            </p>
-          </div>
-          <span className="rounded bg-amber-50 px-2 py-1 text-[11px] font-medium text-amber-800">
-            {cust.illustrative ? 'Illustrative account · ' : ''}Synthetic data
-          </span>
-        </div>
-
-        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           <div className="flex items-baseline gap-1">
-            <span className="font-mono text-3xl font-semibold tabular-nums text-ink">{ev.health.score}</span>
-            <span className="text-sm text-ink-muted">/100 Health</span>
+            <span className="font-mono text-4xl font-semibold tabular-nums text-ink">{health.healthScore}</span>
+            <span className="text-sm text-ink-muted">/100</span>
           </div>
-          <span className={`rounded-md px-2 py-1 text-sm font-semibold ${BAND_TONE[ev.health.band]}`}>{ev.health.band}</span>
-          {ev.health.provisional && (
-            <span className="rounded bg-slate-100 px-2 py-0.5 text-[11px] text-ink-muted" title={ev.health.missingRule}>
-              Provisional · {ev.health.coverage}% evidence coverage
+          <BandBadge band={health.healthBand} />
+          {scoreChange != null && (
+            <span className={`text-sm font-medium ${scoreChange < 0 ? 'text-danger' : 'text-ink-muted'}`}>
+              {scoreChange >= 0 ? '+' : ''}
+              {scoreChange} pts vs {priorLabel}
             </span>
           )}
-          <span className="text-xs text-ink-muted" title={ev.health.bandRule}>
-            Higher = healthier · {ev.health.bandRule}
-          </span>
+          {ev.health.provisional && (
+            <span className="rounded bg-slate-100 px-2 py-0.5 text-[11px] text-ink-muted" title={ev.health.missingRule}>
+              Provisional · {ev.health.coverage}% evidence
+            </span>
+          )}
+          {health.overrideReason && (
+            <span className="rounded bg-red-50 px-2 py-0.5 text-[11px] font-medium text-danger" title={health.overrideReason}>
+              Risk Band override · score alone = {health.scoreBand}
+            </span>
+          )}
+          {filters.customerIds.length === 0 && (
+            <button type="button" className="text-[11px] text-forest underline" onClick={() => selectCustomer(customerId)}>
+              Pin in Customer filter
+            </button>
+          )}
         </div>
-        <dl className="mt-2 grid gap-x-6 gap-y-1 text-xs sm:grid-cols-3">
-          <Fact label="Analysis period" value={ev.window.current.label} />
-          <Fact label="Compared with" value={`${priorLabel} (same months prior year)`} />
-          <Fact label="As-of date" value={asOf} />
-        </dl>
-        <p className="mt-3 text-[15px] leading-snug text-ink">{ev.conclusion}</p>
-        <p className="mt-1 text-xs text-ink-muted">
-          Net Billing {formatCurrency(ev.revenue.current, true)} vs {formatCurrency(ev.revenue.prior ?? 0, true)} ({signedPct(ev.revenue.pct)}) ·
-          Shipped packages {formatNumber(ev.volume.current)} vs {formatNumber(ev.volume.prior ?? 0)} ({signedPct(ev.volume.pct)})
-        </p>
+        <p className="mt-3 max-w-4xl text-[15px] leading-snug text-ink">{dx.headline}</p>
+        {topAction ? (
+          <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg bg-brand-50/60 px-3 py-2 text-[13px]">
+            <span className="font-semibold text-forest">Next action</span>
+            <span className="text-ink">
+              {topAction.title} · <span className="text-ink-muted">{topAction.owner} · by {topAction.followUpBy}</span>
+            </span>
+            <button type="button" className="font-medium text-forest underline" onClick={() => go(topAction.link)}>
+              Investigate
+            </button>
+            <button type="button" className="text-ink-muted underline" onClick={() => addDemoAction(topAction.title)}>
+              Add to tracker
+            </button>
+          </div>
+        ) : (
+          <p className="mt-3 text-[13px] text-ink-muted">No evidence-backed action this window — maintain cadence.</p>
+        )}
       </section>
 
-      {/* 2 · Top risk evidence */}
-      <ChartCard
-        title="Top risk evidence"
-        subtitle="Rule-based; 'Needs investigation' = score is weak but no risk rule is met"
-        formula="Score impact = weight × (100 − component score) — points this component takes off the 100-point Health Score"
-        source="customerEvidence · computeCustomerHealth"
-        timeBasis={`${ev.window.current.label} vs ${priorLabel}; as of ${asOf}`}
-      >
-        {ev.risks.length === 0 ? (
-          <p className="text-sm text-ink-muted">No risk rule is met in this window.</p>
-        ) : (
-          <>
-          <ul className="space-y-2 sm:hidden">
-            {ev.risks.map((r) => (
-              <li key={r.id} className="rounded-lg border border-[#e1e9e4] p-2.5 text-[13px]">
-                <div className="flex items-start justify-between gap-2">
-                  <span className="font-medium text-ink">{r.risk}</span>
-                  <span className="shrink-0 font-mono text-ink">{impact(r.scoreImpact)} pts</span>
-                </div>
-                <span className={`mt-0.5 inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold ${r.status === 'Confirmed' ? 'bg-rose-50 text-rose-700' : 'bg-slate-100 text-ink-muted'}`}>{r.status}</span>
-                <p className="mt-1 font-mono text-xs">{r.prior} → {r.current} ({r.change})</p>
-                <p className="text-xs text-ink-muted">{r.trigger}</p>
-                <button type="button" className="mt-1 text-xs font-medium text-forest underline" onClick={() => go(r.link)}>{r.link.label}</button>
-              </li>
-            ))}
-          </ul>
-          <div className="hidden overflow-x-auto sm:block">
-            <table className="w-full min-w-[760px] text-left text-[13px]">
-              <thead className="text-[10px] uppercase tracking-wide text-ink-muted">
-                <tr className="border-b border-slate-200">
-                  <th className="py-2 pr-2">Risk</th>
-                  <th className="py-2 pr-2 text-right">Prior</th>
-                  <th className="py-2 pr-2 text-right">Current</th>
-                  <th className="py-2 pr-2 text-right">Change</th>
-                  <th className="py-2 pr-2">Trigger</th>
-                  <th className="py-2 pr-2 text-right">Score impact</th>
-                  <th className="py-2">Investigate</th>
-                </tr>
-              </thead>
-              <tbody>
-                {ev.risks.map((r) => (
-                  <RiskRow key={r.id} r={r} onGo={go} />
-                ))}
-              </tbody>
-            </table>
+      <KpiStrip
+        items={[
+          {
+            label: 'Net Billing',
+            value: formatCurrency(ev.revenue.current, true),
+            sub: `${signedPct(ev.revenue.pct)} YoY`,
+            tip: `Net Billing ${ev.window.current.label} vs ${priorLabel}: ${formatCurrencyPrecise(ev.revenue.prior ?? 0)} → ${formatCurrencyPrecise(ev.revenue.current)}`,
+            tone: (ev.revenue.pct ?? 0) <= -10 ? 'risk' : 'neutral',
+          },
+          {
+            label: 'Shipped Packages',
+            value: formatNumber(ev.volume.current),
+            sub: `${signedPct(ev.volume.pct)} YoY`,
+            tip: 'Shipped packages by ship month — same population as the Health Score volume component.',
+            tone: (ev.volume.pct ?? 0) <= -10 ? 'risk' : 'neutral',
+          },
+          {
+            label: 'Contribution Margin',
+            value: ev.margin.currentCm == null ? 'N/A' : formatPercent(ev.margin.currentCm),
+            sub:
+              ev.margin.changePts == null
+                ? `Floor ${ev.margin.floorPct}%`
+                : `${ev.margin.changePts > 0 ? '+' : ''}${ev.margin.changePts.toFixed(1)} pts YoY`,
+            tip: '(Net Billing − variable cost) ÷ Net Billing. Commission is not deducted.',
+            tone: (ev.margin.currentCm ?? 99) < ev.margin.floorPct ? 'risk' : 'neutral',
+          },
+          {
+            label: 'Overdue AR',
+            value: formatCurrency(ev.payment.overdueAr, true),
+            sub: `Open AR ${formatCurrency(ev.payment.openAr, true)}`,
+            tip: 'Past-due balance as of the As-of Date. Cash timing — not lost revenue.',
+            tone: ev.payment.overdueAr > 0 ? 'risk' : 'neutral',
+          },
+        ]}
+      />
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <ChartCard
+          title="Is this client getting healthier?"
+          subtitle={
+            trend.length > 1
+              ? `Health ${trend[0].score} → ${trend[trend.length - 1].score} over ${trend.length} rolling windows · hollow dot = provisional`
+              : 'Not enough history for a trend'
+          }
+          formula={`Each point recomputes the same Health Score on a rolling ${trend[0]?.windowLabel.includes('→') ? 'multi-month' : '1-month'} window (same length as the selected window), ending that month, vs its own prior-year window. Provisional = a component lacked evidence and used the neutral placeholder.`}
+        >
+          <div className="h-48">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={trend} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+                <CartesianGrid stroke="#e3ebe6" vertical={false} />
+                <ReferenceArea y1={trendMin} y2={50} fill="#C44536" fillOpacity={0.05} />
+                <ReferenceArea y1={50} y2={70} fill="#E58A2B" fillOpacity={0.06} />
+                <ReferenceLine y={70} stroke="#b9c8c0" strokeDasharray="4 3" />
+                <ReferenceLine y={50} stroke="#E58A2B" strokeOpacity={0.6} strokeDasharray="4 3" />
+                <XAxis dataKey="period" tick={{ fontSize: 11 }} />
+                <YAxis domain={[trendMin, 100]} ticks={[trendMin, 50, 70, 85, 100].filter((t, i, a) => t >= trendMin && a.indexOf(t) === i)} tick={{ fontSize: 11 }} width={32} />
+                <Tooltip
+                  content={({ active, payload }) => {
+                    if (!active || !payload?.[0]) return null
+                    const p = payload[0].payload as (typeof trend)[number]
+                    return (
+                      <div className="rounded-lg border border-[#dce6df] bg-white px-3 py-2 text-[12px] shadow-md">
+                        <p className="font-semibold">Window {p.windowLabel}</p>
+                        <p>
+                          Health {p.score} · {p.band}
+                        </p>
+                        <p className="text-ink-muted">
+                          Evidence coverage {p.coverage}%{p.provisional ? ' · provisional' : ''}
+                        </p>
+                      </div>
+                    )
+                  }}
+                />
+                <Line
+                  type="linear"
+                  dataKey="score"
+                  stroke="#123C35"
+                  strokeWidth={2}
+                  isAnimationActive={false}
+                  dot={(props: { cx?: number; cy?: number; payload?: { provisional: boolean; period: string } }) => (
+                    <circle
+                      key={props.payload?.period}
+                      cx={props.cx}
+                      cy={props.cy}
+                      r={4}
+                      fill={props.payload?.provisional ? '#fff' : '#123C35'}
+                      stroke="#123C35"
+                      strokeWidth={1.5}
+                    />
+                  )}
+                />
+              </LineChart>
+            </ResponsiveContainer>
           </div>
-          </>
-        )}
-      </ChartCard>
+        </ChartCard>
 
-      {/* 3 · Next action */}
-      <ChartCard
-        title="Next action"
-        subtitle="Suggested from the evidence above — owners and dates are suggestions, not assigned tasks"
-        formula="Priority: High = confirmed rule & ≥ 10 pts score impact · Medium = confirmed (< 10 pts) or ≥ 5 pts unconfirmed · Low otherwise"
+        <ChartCard
+          title="How are revenue and volume moving?"
+          subtitle={`${priorLabel} (gray) vs ${ev.window.current.label} (green) · ${ev.volume.withinCurrent.label.toLowerCase()}`}
+          formula="Net Billing by accounting period · shipped packages by ship month. Shown as two charts (no dual axis)."
+        >
+          <div className="grid gap-2">
+            {(
+              [
+                ['netBilling', 'Net Billing', (v: number) => compactTick(v, '$')],
+                ['packages', 'Shipped packages', (v: number) => compactTick(v, '')],
+              ] as const
+            ).map(([key, label, fmt]) => (
+              <div key={key}>
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-muted">{label}</p>
+                <div className="h-[84px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={monthly} margin={{ top: 4, right: 4, left: 0, bottom: 0 }} barCategoryGap={3}>
+                      <XAxis dataKey="period" hide />
+                      <YAxis tick={{ fontSize: 10 }} width={46} tickFormatter={(v) => fmt(Number(v))} tickCount={3} />
+                      <Tooltip
+                        formatter={(v) => [key === 'netBilling' ? formatCurrencyPrecise(Number(v)) : formatNumber(Number(v)), label]} labelFormatter={(l) => String(l)} cursor={{ fill: '#f0f5f2' }} />
+                      <Bar dataKey={key} isAnimationActive={false} radius={[3, 3, 0, 0]}>
+                        {monthly.map((m) => (
+                          <Cell key={m.period} fill={m.segment === 'current' ? '#2F7D62' : '#B9C6C0'} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            ))}
+            <p className="text-[11px] text-ink-muted">
+              {monthly[0]?.period} → {monthly[monthly.length - 1]?.period}
+            </p>
+          </div>
+        </ChartCard>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+        <ChartCard
+          title="Which health dimensions help or hurt?"
+          subtitle="Component score 0–100 · red = drag on the score · green = strength · gray = neutral context"
+          formula={`Health = Σ weight × component. Drag: score < 60 and ≥ 3 pts off the 100-point total. Strength: score ≥ 80. ${ev.health.bandRule}`}
+          footer={
+            <button type="button" className="text-[12px] font-medium text-forest underline" onClick={() => openSection('calc', 'c360-calc')}>
+              Detailed score calculation
+            </button>
+          }
+        >
+          <div className="h-48" aria-label="Health score by component">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={ev.health.components} layout="vertical" margin={{ left: 0, right: 72, top: 0, bottom: 0 }} barCategoryGap={8}>
+                <CartesianGrid stroke="#e3ebe6" horizontal={false} />
+                <XAxis type="number" domain={[0, 100]} ticks={[0, 60, 80, 100]} tick={{ fontSize: 10 }} />
+                <YAxis
+                  type="category"
+                  dataKey="name"
+                  width={128}
+                  tick={{ fontSize: 12 }}
+                  tickFormatter={(v: string) => v.split(' (')[0]}
+                  axisLine={false}
+                  tickLine={false}
+                />
+                <ReferenceLine x={60} stroke="#b9c8c0" strokeDasharray="3 3" />
+                <Tooltip
+                  cursor={{ fill: '#f0f5f2' }}
+                  content={({ active, payload }) => {
+                    if (!active || !payload?.[0]) return null
+                    const c = payload[0].payload as (typeof ev.health.components)[number]
+                    return (
+                      <div className="max-w-xs rounded-lg border border-[#dce6df] bg-white px-3 py-2 text-[12px] shadow-md">
+                        <p className="font-semibold">{c.name}</p>
+                        <p>
+                          Score {c.score}
+                          {c.observed ? '' : ' (placeholder)'} · weight {Math.round(c.weight * 100)}% · −{c.shortfall.toFixed(1)} pts off 100
+                        </p>
+                        <p className="mt-1 text-ink-muted">{c.rawMetric}</p>
+                      </div>
+                    )
+                  }}
+                />
+                <Bar dataKey="score" isAnimationActive={false} radius={[0, 4, 4, 0]}>
+                  {ev.health.components.map((c) => (
+                    <Cell key={c.key} fill={TONE_FILL[driverTone(c.key)]} fillOpacity={c.observed ? 1 : 0.4} />
+                  ))}
+                  <LabelList
+                    dataKey="weight"
+                    position="right"
+                    formatter={(v: unknown) => `wt ${Math.round(Number(v) * 100)}%`}
+                    style={{ fontSize: 11, fill: '#4a635e' }}
+                  />
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </ChartCard>
+
+        <ChartCard title="Top risk drivers" subtitle="Drivers are score contributions · alerts are rule flags, not causes">
+          <DriverGroup tone="negative" title="Negative health drivers" items={dx.negative.map((d) => `${d.name} −${d.shortfall.toFixed(1)} pts · ${d.detail}`)} empty="No material score drag" />
+          <DriverGroup
+            tone="alert"
+            title="Risk alerts"
+            items={dx.alerts.map((a) => `${a.label} · ${a.detail}`)}
+            empty="No risk rule met"
+          />
+          <DriverGroup tone="positive" title="Positive health drivers" items={dx.positive.map((d) => `${d.name} ${d.score} · ${d.detail}`)} empty="None scoring ≥ 80" />
+          <DriverGroup tone="neutral" title="Neutral context" items={dx.neutral.map((d) => `${d.name} ${d.score} · ${d.detail}`)} empty="—" />
+          {dx.overrideReason && <p className="mt-2 text-[12px] text-danger">Override · {dx.overrideReason}</p>}
+        </ChartCard>
+      </div>
+
+      {scoreAttribution.length > 0 && (
+        <Collapsible
+          id="c360-change"
+          title="Why did the score change vs the prior window?"
+          subtitle={`${priorHealth?.healthScore} → ${health.healthScore} · contribution change by component`}
+          open={sections.change}
+          onToggle={(o) => setSections((s) => ({ ...s, change: o }))}
+        >
+          <FloatingWaterfall
+            steps={scoreAttribution}
+            height={240}
+            totalKeys={['prior', 'current']}
+            valueFormat={(v) => `${v.toFixed(1)} pts`}
+            tickFormat={(v) => `${Math.round(v)}`}
+            footingNote="Δ contribution = weight × (current component − prior component). Arithmetic attribution of the score, not business root cause."
+          />
+        </Collapsible>
+      )}
+
+      <Collapsible
+        id="c360-calc"
+        title="Detailed score calculation"
+        subtitle="Components, weights, rules, sources · alternative 5-dimension Client Quality view"
+        open={sections.calc}
+        onToggle={(o) => setSections((s) => ({ ...s, calc: o }))}
       >
-        <div className="grid gap-3 lg:grid-cols-3">
-          {ev.actions.map((a) => (
-            <div key={a.id} className="flex flex-col rounded-xl border border-[#e1e9e4] bg-white p-3">
-              <div className="flex items-start justify-between gap-2">
-                <p className="text-[13px] font-semibold text-ink">{a.title}</p>
-                <span
-                  className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
-                    a.priority === 'High' ? 'bg-rose-50 text-rose-700' : a.priority === 'Medium' ? 'bg-amber-50 text-amber-800' : 'bg-slate-100 text-ink-muted'
-                  }`}
-                  title={a.priorityRationale}
-                >
-                  {a.priority}
-                </span>
-              </div>
-              <p className="mt-1 text-xs text-ink">{a.problem}</p>
-              <p className="mt-1 text-xs text-ink-muted">{a.nextStep}</p>
-              <dl className="mt-2 space-y-0.5 text-[11px] text-ink-muted">
-                <Fact label="Suggested owner" value={a.owner} />
-                <Fact label="Suggested follow-up" value={a.followUpBy} />
-                <Fact label="Success measure" value={a.successMeasure} />
-                <Fact label="Financial impact" value={a.financialImpact} />
-                <Fact label="Evidence completeness" value={a.evidenceCompleteness} />
-              </dl>
-              <div className="mt-auto flex flex-wrap gap-2 pt-2">
-                <button type="button" className="text-[11px] font-medium text-forest underline" onClick={() => go(a.link)}>
-                  Investigate
-                </button>
-                <button type="button" className="text-[11px] text-ink-muted underline" onClick={() => addDemoAction(a.title)}>
-                  Add to tracker
-                </button>
-              </div>
-            </div>
-          ))}
-          {ev.actions.length === 0 && <p className="text-sm text-ink-muted">Maintain cadence; no evidence-backed action for this window.</p>}
-        </div>
-      </ChartCard>
-
-      <nav className="sticky top-0 z-10 -mx-1 flex gap-1 overflow-x-auto bg-[var(--page-bg,#f6f8f6)]/95 px-1 py-1.5" aria-label="Customer 360 details">
-        {SECTIONS.map((s) => (
-          <a
-            key={s.id}
-            href={`#${s.id}`}
-            onClick={(e) => {
-              e.preventDefault()
-              document.getElementById(s.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-            }}
-            className="shrink-0 rounded-md border border-[#dce6df] bg-white px-2.5 py-1 text-[12px] font-medium text-ink-muted hover:text-forest"
-          >
-            {s.label}
-          </a>
-        ))}
-      </nav>
-
       {/* Score breakdown */}
       <ChartCard
         id="c360-score"
@@ -472,8 +689,8 @@ export function Customer360() {
       {cqScore && (
         <ChartCard
           id="c360-cq"
-          title="Client Quality dimensions (N/A-safe)"
-          subtitle="Five-dimension CQ model · missing Relationship Signals excluded and weights renormalized · not churn probability"
+          title="Alternative lens · Client Quality 5-dimension model"
+          subtitle="Secondary view — the Health Score and Risk Band above are canonical. Missing Relationship Signals are excluded and weights renormalized · not churn probability"
           formula="CQ = Σ(available dimension × normalized weight). Complaints/tickets not in Synthetic Data → Relationship often N/A."
           insight={
             cqAttribution?.totalChange != null
@@ -532,6 +749,14 @@ export function Customer360() {
         </ChartCard>
       )}
 
+      </Collapsible>
+
+      <Collapsible
+        title="Revenue, volume & margin detail"
+        subtitle="Monthly volume · metro and service change · revenue bridge · profitability bridge"
+        open={sections.detail}
+        onToggle={(o) => setSections((s) => ({ ...s, detail: o }))}
+      >
       {/* What changed: volume */}
       <ChartCard
         id="c360-volume"
@@ -585,29 +810,36 @@ export function Customer360() {
             ) : null}
           </div>
           <div>
-            <p className="text-xs font-semibold text-ink">Change by service</p>
+            <p className="text-xs font-semibold text-ink">Service mix (shipped packages)</p>
             <table className="mt-1 w-full text-[13px]">
               <thead className="text-[10px] uppercase text-ink-muted">
                 <tr>
                   <th className="text-left">Service</th>
                   <th className="text-right">Prior</th>
                   <th className="text-right">Current</th>
-                  <th className="text-right">Δ</th>
+                  <th className="text-right">Mix now</th>
                   <th className="text-right">Δ %</th>
                 </tr>
               </thead>
               <tbody>
-                {ev.volume.byService.map((r) => (
-                  <tr key={r.key} className="border-t border-slate-100">
-                    <td>{r.key}</td>
-                    <td className="text-right font-mono">{formatNumber(r.prior)}</td>
-                    <td className="text-right font-mono">{formatNumber(r.current)}</td>
-                    <td className="text-right font-mono">{signedNum(r.delta)}</td>
-                    <td className="text-right font-mono">{signedPct(r.prior ? (r.delta / r.prior) * 100 : null)}</td>
-                  </tr>
-                ))}
+                {ev.volume.byService.map((r) => {
+                  const curTotal = ev.volume.byService.reduce((a, x) => a + x.current, 0)
+                  return (
+                    <tr key={r.key} className="border-t border-slate-100">
+                      <td>{r.key}</td>
+                      <td className="text-right font-mono">{formatNumber(r.prior)}</td>
+                      <td className="text-right font-mono">{formatNumber(r.current)}</td>
+                      <td className="text-right font-mono">{curTotal ? `${((r.current / curTotal) * 100).toFixed(1)}%` : 'N/A'}</td>
+                      <td className="text-right font-mono">{signedPct(r.prior ? (r.delta / r.prior) * 100 : null)}</td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
+            <p className="mt-1 text-[11px] text-ink-muted">
+              Mix share = service ÷ all services for this client in the current scope
+              {filters.serviceTypes.length ? ` (service filter ${filters.serviceTypes.join(', ')} active — shares cover the filtered services only)` : ''}.
+            </p>
             <p className="mt-2 text-[11px] text-ink-muted">
               Statistical contribution only — it does not prove competitive loss, lower customer demand or share change. The business cause needs account evidence.
             </p>
@@ -667,6 +899,14 @@ export function Customer360() {
         )}
       </ChartCard>
 
+      </Collapsible>
+
+      <Collapsible
+        title={`Billing cases & payments`}
+        subtitle={`${ev.billing.cases.length} open billing case(s) · overdue AR ${formatCurrency(ev.payment.overdueAr, true)}`}
+        open={sections.billing}
+        onToggle={(o) => setSections((s) => ({ ...s, billing: o }))}
+      >
       <div className="grid gap-4 lg:grid-cols-2">
         <ChartCard
           id="c360-billing"
@@ -741,6 +981,14 @@ export function Customer360() {
         </ChartCard>
       </div>
 
+      </Collapsible>
+
+      <Collapsible
+        title="Delivery, scenario exposure & contract"
+        subtitle={`On-time ${ev.delivery.onTimePct?.toFixed(1) ?? 'N/A'}% · scenario exposure ${formatCurrency(ev.exposure.amount, true)} · renewal ${contract?.renewalDate ?? '—'}`}
+        open={sections.delivery}
+        onToggle={(o) => setSections((s) => ({ ...s, delivery: o }))}
+      >
       <ChartCard
         id="c360-delivery"
         title="Delivery"
@@ -817,6 +1065,107 @@ export function Customer360() {
         )}
       </div>
 
+      </Collapsible>
+
+      <Collapsible
+        title="Risk evidence, actions & engagement"
+        subtitle={`${ev.allRisks.length} risk rule row(s) · ${ev.actions.length} suggested action(s) · tracker`}
+        open={sections.actions}
+        onToggle={(o) => setSections((s) => ({ ...s, actions: o }))}
+      >
+      {/* 2 · Top risk evidence */}
+      <ChartCard
+        id="c360-risk-table"
+        title="Risk rule evidence"
+        subtitle="Rule-based; 'Needs investigation' = score is weak but no risk rule is met"
+        formula="Score impact = weight × (100 − component score) — points this component takes off the 100-point Health Score"
+        source="customerEvidence · computeCustomerHealth"
+        timeBasis={`${ev.window.current.label} vs ${priorLabel}; as of ${asOf}`}
+      >
+        {ev.risks.length === 0 ? (
+          <p className="text-sm text-ink-muted">No risk rule is met in this window.</p>
+        ) : (
+          <>
+          <ul className="space-y-2 sm:hidden">
+            {ev.risks.map((r) => (
+              <li key={r.id} className="rounded-lg border border-[#e1e9e4] p-2.5 text-[13px]">
+                <div className="flex items-start justify-between gap-2">
+                  <span className="font-medium text-ink">{r.risk}</span>
+                  <span className="shrink-0 font-mono text-ink">{impact(r.scoreImpact)} pts</span>
+                </div>
+                <span className={`mt-0.5 inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold ${r.status === 'Confirmed' ? 'bg-rose-50 text-rose-700' : 'bg-slate-100 text-ink-muted'}`}>{r.status}</span>
+                <p className="mt-1 font-mono text-xs">{r.prior} → {r.current} ({r.change})</p>
+                <p className="text-xs text-ink-muted">{r.trigger}</p>
+                <button type="button" className="mt-1 text-xs font-medium text-forest underline" onClick={() => go(r.link)}>{r.link.label}</button>
+              </li>
+            ))}
+          </ul>
+          <div className="hidden overflow-x-auto sm:block">
+            <table className="w-full min-w-[760px] text-left text-[13px]">
+              <thead className="text-[10px] uppercase tracking-wide text-ink-muted">
+                <tr className="border-b border-slate-200">
+                  <th className="py-2 pr-2">Risk</th>
+                  <th className="py-2 pr-2 text-right">Prior</th>
+                  <th className="py-2 pr-2 text-right">Current</th>
+                  <th className="py-2 pr-2 text-right">Change</th>
+                  <th className="py-2 pr-2">Trigger</th>
+                  <th className="py-2 pr-2 text-right">Score impact</th>
+                  <th className="py-2">Investigate</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ev.risks.map((r) => (
+                  <RiskRow key={r.id} r={r} onGo={go} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+          </>
+        )}
+      </ChartCard>
+
+      {/* 3 · Next action */}
+      <ChartCard
+        title="Suggested actions"
+        subtitle="Suggested from the evidence above — owners and dates are suggestions, not assigned tasks"
+        formula="Priority: High = confirmed rule & ≥ 10 pts score impact · Medium = confirmed (< 10 pts) or ≥ 5 pts unconfirmed · Low otherwise"
+      >
+        <div className="grid gap-3 lg:grid-cols-3">
+          {ev.actions.map((a) => (
+            <div key={a.id} className="flex flex-col rounded-xl border border-[#e1e9e4] bg-white p-3">
+              <div className="flex items-start justify-between gap-2">
+                <p className="text-[13px] font-semibold text-ink">{a.title}</p>
+                <span
+                  className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                    a.priority === 'High' ? 'bg-rose-50 text-rose-700' : a.priority === 'Medium' ? 'bg-amber-50 text-amber-800' : 'bg-slate-100 text-ink-muted'
+                  }`}
+                  title={a.priorityRationale}
+                >
+                  {a.priority}
+                </span>
+              </div>
+              <p className="mt-1 text-xs text-ink">{a.problem}</p>
+              <p className="mt-1 text-xs text-ink-muted">{a.nextStep}</p>
+              <dl className="mt-2 space-y-0.5 text-[11px] text-ink-muted">
+                <Fact label="Suggested owner" value={a.owner} />
+                <Fact label="Suggested follow-up" value={a.followUpBy} />
+                <Fact label="Success measure" value={a.successMeasure} />
+                <Fact label="Financial impact" value={a.financialImpact} />
+                <Fact label="Evidence completeness" value={a.evidenceCompleteness} />
+              </dl>
+              <div className="mt-auto flex flex-wrap gap-2 pt-2">
+                <button type="button" className="text-[11px] font-medium text-forest underline" onClick={() => go(a.link)}>
+                  Investigate
+                </button>
+                <button type="button" className="text-[11px] text-ink-muted underline" onClick={() => addDemoAction(a.title)}>
+                  Add to tracker
+                </button>
+              </div>
+            </div>
+          ))}
+          {ev.actions.length === 0 && <p className="text-sm text-ink-muted">Maintain cadence; no evidence-backed action for this window.</p>}
+        </div>
+      </ChartCard>
       <ChartCard title="Engagement" subtitle="Synthetic demo events (not CRM-backed) · not used in the Health Score">
         <div className="grid gap-4 md:grid-cols-2">
           <div>
@@ -846,8 +1195,7 @@ export function Customer360() {
       </ChartCard>
 
       {/* Actions & account */}
-      <section id="c360-account" className="space-y-4">
-        <ChartCard title="Action tracker (demo)" subtitle="Stored in this browser only — may clear on refresh or a new profile">
+        <ChartCard id="c360-account" title="Action tracker (demo)" subtitle="Stored in this browser only — may clear on refresh or a new profile">
           <div className="flex flex-wrap gap-2">
             <input
               className="filter-input min-w-0 flex-1 text-sm"
@@ -877,7 +1225,9 @@ export function Customer360() {
             ))}
           </ul>
         </ChartCard>
+      </Collapsible>
 
+      <Collapsible title="Metric definitions & source records" subtitle="Account structure · contracts · commission · full metro record">
         <Collapsible title="Account structure & contracts" subtitle={`${brands.length} brand(s) · ${contracts.length} contract(s)`}>
           <dl className="grid grid-cols-2 gap-2 text-[13px]">
             <Fact label="Bill-to" value={cust.customer_name} />
@@ -928,7 +1278,7 @@ export function Customer360() {
             onRowClick={(r) => setFilters({ ...filters, customerIds: [customerId], metros: [r.key], stations: [] })}
           />
         </Collapsible>
-      </section>
+      </Collapsible>
     </div>
   )
 }
@@ -964,6 +1314,52 @@ function RiskRow({ r, onGo }: { r: RiskEvidenceRow; onGo: (l: EvidenceLink) => v
         </button>
       </td>
     </tr>
+  )
+}
+
+function compactTick(n: number, prefix: string): string {
+  const a = Math.abs(n)
+  if (a >= 1e6) return `${prefix}${Number((n / 1e6).toFixed(1))}M`
+  if (a >= 1e3) return `${prefix}${Math.round(n / 1e3)}K`
+  return `${prefix}${Math.round(n)}`
+}
+
+function DriverGroup({
+  tone,
+  title,
+  items,
+  empty,
+}: {
+  tone: 'negative' | 'positive' | 'alert' | 'neutral'
+  title: string
+  items: string[]
+  empty: string
+}) {
+  const mark = { negative: '▼', positive: '▲', alert: '!', neutral: '·' }[tone]
+  const cls = {
+    negative: 'text-danger',
+    positive: 'text-success',
+    alert: 'text-warning',
+    neutral: 'text-ink-muted',
+  }[tone]
+  return (
+    <div className="mb-2 last:mb-0">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-muted">{title}</p>
+      {items.length ? (
+        <ul className="mt-0.5 space-y-0.5 text-[13px] text-ink">
+          {items.slice(0, 3).map((t) => (
+            <li key={t} className="flex gap-1.5">
+              <span className={`w-3 shrink-0 text-center font-bold ${cls}`} aria-hidden>
+                {mark}
+              </span>
+              <span className="min-w-0">{t}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="mt-0.5 text-[12px] text-ink-muted">{empty}</p>
+      )}
+    </div>
   )
 }
 
