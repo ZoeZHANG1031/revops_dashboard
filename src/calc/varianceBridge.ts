@@ -23,12 +23,24 @@ export interface VarianceBridgeItem {
  * 4. Credits: −(Actual Credits − Forecast Credits)
  * 5. Other: plug so sum(effects) = Actual − Forecast (timing, accruals, etc.)
  */
+export interface VarianceBridgeResult {
+  items: VarianceBridgeItem[]
+  actual: number
+  forecast: number
+  checkSum: number
+  /** |explained| / (|explained| + |residual|) — null if no movement */
+  attributionCoverage: number | null
+  /** True when |residual| > 40% of |total gap| or > sum(|drivers|) */
+  attributionQualityWarning: boolean
+  attributionNote: string
+}
+
 export function computeVarianceBridge(
   data: DataStore,
   rawFilters: GlobalFilters,
   scenario: 'Base' | 'Upside' | 'Downside' = 'Base',
   groupBy: 'total' | 'customer' | 'region' | 'service' | 'month' = 'total',
-): { items: VarianceBridgeItem[]; actual: number; forecast: number; checkSum: number } {
+): VarianceBridgeResult {
   // Comparable window: only periods that carry Existing forecast rows (never compare actual to a missing forecast)
   const filters = forecastComparability(data, rawFilters, scenario).comparableFilters
   const actual = computeRecognizedRevenue(data, filters).amount
@@ -73,32 +85,46 @@ export function computeVarianceBridge(
   const other = money(totalGap - explained)
 
   const items: VarianceBridgeItem[] = [
-    { key: 'forecast', label: 'Forecast Revenue', amount: forecast },
+    { key: 'forecast', label: 'Existing Customer Forecast', amount: forecast },
     { key: 'volume', label: 'Volume Impact', amount: volumeImpact },
     { key: 'price', label: 'Price Impact', amount: priceImpact },
     { key: 'mix', label: 'Customer / Service Mix Impact', amount: mixImpact },
     { key: 'credits', label: 'Credits Impact', amount: creditsImpact },
-    { key: 'other', label: 'Other Adjustments', amount: other },
-    { key: 'actual', label: 'Actual Revenue', amount: actual },
+    { key: 'other', label: 'Unexplained Residual', amount: other },
+    { key: 'actual', label: 'Actual Recognized Revenue', amount: actual },
   ]
 
-  if (groupBy !== 'total') {
-    return {
-      items,
-      actual,
-      forecast,
-      checkSum: money(volumeImpact + priceImpact + mixImpact + creditsImpact + other),
-      // drill series attached for UI
-      ...{ drilldown: buildDrilldown(data, filters, groupBy, scenario) },
-    } as ReturnType<typeof computeVarianceBridge> & { drilldown: unknown }
-  }
+  const driverAbs =
+    Math.abs(volumeImpact) + Math.abs(priceImpact) + Math.abs(mixImpact) + Math.abs(creditsImpact)
+  const residualAbs = Math.abs(other)
+  const gapAbs = Math.abs(totalGap)
+  const attributionCoverage =
+    driverAbs + residualAbs === 0 ? null : money((driverAbs / (driverAbs + residualAbs)) * 100)
+  const attributionQualityWarning =
+    gapAbs > 0 && (residualAbs > gapAbs * 0.4 || (driverAbs > 0 && residualAbs > driverAbs))
+  const attributionNote = attributionQualityWarning
+    ? 'Attribution Quality Warning: unexplained residual is large vs known drivers (timing, accruals, or missing forecast grain). Residual is retained — not forced to zero.'
+    : 'Forecast + signed driver impacts + residual = Actual. Scope = Existing Customer Forecast only (not Total Business).'
 
-  return {
+  const checkSum = money(volumeImpact + priceImpact + mixImpact + creditsImpact + other)
+  const base: VarianceBridgeResult = {
     items,
     actual,
     forecast,
-    checkSum: money(volumeImpact + priceImpact + mixImpact + creditsImpact + other),
+    checkSum,
+    attributionCoverage,
+    attributionQualityWarning,
+    attributionNote,
   }
+
+  if (groupBy !== 'total') {
+    return {
+      ...base,
+      ...{ drilldown: buildDrilldown(data, filters, groupBy, scenario) },
+    } as VarianceBridgeResult & { drilldown: unknown }
+  }
+
+  return base
 }
 
 function computeMixEffect(

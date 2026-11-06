@@ -11,7 +11,9 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
+import { computeCustomerRamp } from '@/calc/contractActivation'
 import { computeCustomerHealth } from '@/calc/customerHealth'
+import { computeCustomerRevenueChange } from '@/calc/customerRevenueChange'
 import { forecastComparability } from '@/calc/forecastScope'
 import { computeRecognizedRevenue } from '@/calc/recognizedRevenue'
 import { ChartCard } from '@/components/common/ChartCard'
@@ -84,6 +86,14 @@ export function Customer360() {
   const health = useMemo(
     () => (customerId ? computeCustomerHealth(data, custFilters, healthWeights)[0] : null),
     [data, custFilters, healthWeights, customerId],
+  )
+  const revChange = useMemo(
+    () => (customerId ? computeCustomerRevenueChange(data, filters, customerId) : null),
+    [data, filters, customerId],
+  )
+  const ramp = useMemo(
+    () => (customerId ? computeCustomerRamp(data, filters, customerId) : null),
+    [data, filters, customerId],
   )
 
   const cust = data.customers.find((c) => c.customer_id === customerId)
@@ -407,41 +417,101 @@ export function Customer360() {
       )}
 
       {tab === 'revenue' && (
-        <ChartCard title="Revenue by Metro" subtitle="Net Billing attribution via shipment metro">
-          <DataTable
-            rows={byMetro.map((r) => ({ ...r, id: r.metro }))}
-            rowKey={(r) => r.metro}
-            columns={[
-              { key: 'm', header: 'Metro', render: (r) => r.metro, sortValue: (r) => r.metro },
-              {
-                key: 'v',
-                header: 'Packages',
-                align: 'right',
-                render: (r) => formatNumber(r.volume),
-                sortValue: (r) => r.volume,
-              },
-              {
-                key: 'r',
-                header: 'Net Billing',
-                align: 'right',
-                render: (r) => formatCurrency(r.revenue, true),
-                sortValue: (r) => r.revenue,
-              },
-            ]}
-            onRowClick={(r) =>
-              setFilters({
-                ...filters,
-                customerIds: [customerId],
-                metros: [r.metro],
-                stations: [],
-              })
-            }
-          />
-          <p className="mt-2 text-xs text-ink-muted">
-            Forecast variance (Existing, comparable):{' '}
-            {forecastVariance == null ? 'N/A' : formatCurrency(forecastVariance, true)}
-          </p>
-        </ChartCard>
+        <div className="space-y-4">
+          {revChange && (
+            <ChartCard
+              title="Revenue change decomposition"
+              subtitle={`${revChange.currentLabel} vs prior ${revChange.priorLabel}`}
+            >
+              {!revChange.comparable ? (
+                <p className="text-sm text-ink-muted">{revChange.note}</p>
+              ) : (
+                <>
+                  <div className="mb-3 grid gap-2 sm:grid-cols-4">
+                    <Kpi
+                      label="Δ Net Billing"
+                      value={formatCurrency(revChange.revenueChange, true)}
+                      sub={formatPercent(revChange.revenueChangePct)}
+                      warn={revChange.revenueChange < 0}
+                    />
+                    <Kpi
+                      label="Volume impact"
+                      value={formatCurrency(revChange.volumeImpact, true)}
+                      sub={formatPercent(revChange.volumeChangePct)}
+                    />
+                    <Kpi
+                      label="RPP / price impact"
+                      value={formatCurrency(revChange.priceImpact, true)}
+                      sub={formatPercent(revChange.rppChangePct)}
+                    />
+                    <Kpi label="Residual" value={formatCurrency(revChange.residual, true)} />
+                  </div>
+                  <p className="text-[12px] text-ink-muted">{revChange.note}</p>
+                  <p className="text-[11px] font-mono text-ink-muted">
+                    check: volume + price + residual = {formatCurrencyPrecise(revChange.checkSum)} (Δ{' '}
+                    {formatCurrencyPrecise(revChange.revenueChange)})
+                  </p>
+                </>
+              )}
+            </ChartCard>
+          )}
+          {ramp && (
+            <ChartCard title="Contract ramp-up" subtitle={ramp.note}>
+              <div className="grid gap-2 sm:grid-cols-4">
+                <Kpi label="Expected mo vol" value={formatNumber(ramp.expectedMonthlyVolume)} />
+                <Kpi
+                  label="First-month vol"
+                  value={ramp.firstMonthVolume == null ? 'N/A' : formatNumber(ramp.firstMonthVolume)}
+                />
+                <Kpi
+                  label="Ramp-up attainment"
+                  value={ramp.rampUpAttainment == null ? 'N/A' : formatPercent(ramp.rampUpAttainment)}
+                  warn={(ramp.rampUpAttainment ?? 100) < 80}
+                />
+                <Kpi
+                  label="Potential vol gap"
+                  value={ramp.potentialVolumeGap == null ? 'N/A' : formatNumber(ramp.potentialVolumeGap)}
+                  sub="Not booked loss"
+                />
+              </div>
+            </ChartCard>
+          )}
+          <ChartCard title="Revenue by Metro" subtitle="Net Billing attribution via shipment metro">
+            <DataTable
+              rows={byMetro.map((r) => ({ ...r, id: r.metro }))}
+              rowKey={(r) => r.metro}
+              columns={[
+                { key: 'm', header: 'Metro', render: (r) => r.metro, sortValue: (r) => r.metro },
+                {
+                  key: 'v',
+                  header: 'Packages',
+                  align: 'right',
+                  render: (r) => formatNumber(r.volume),
+                  sortValue: (r) => r.volume,
+                },
+                {
+                  key: 'r',
+                  header: 'Net Billing',
+                  align: 'right',
+                  render: (r) => formatCurrency(r.revenue, true),
+                  sortValue: (r) => r.revenue,
+                },
+              ]}
+              onRowClick={(r) =>
+                setFilters({
+                  ...filters,
+                  customerIds: [customerId],
+                  metros: [r.metro],
+                  stations: [],
+                })
+              }
+            />
+            <p className="mt-2 text-xs text-ink-muted">
+              Forecast variance (Existing, comparable):{' '}
+              {forecastVariance == null ? 'N/A' : formatCurrency(forecastVariance, true)}
+            </p>
+          </ChartCard>
+        </div>
       )}
 
       {tab === 'operations' && (

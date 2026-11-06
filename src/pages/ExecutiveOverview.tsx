@@ -86,15 +86,11 @@ export function ExecutiveOverview() {
 
   // Driver attribution quality — separate from forecast accuracy
   const residual = bridge.items.find((i) => i.key === 'other')?.amount ?? 0
-  const componentAbs = bridge.items
-    .filter((i) => i.key !== 'forecast' && i.key !== 'actual')
-    .reduce((a, i) => a + Math.abs(i.amount), 0)
-  const residualShare = componentAbs === 0 ? null : (Math.abs(residual) / componentAbs) * 100
-  const attributionQuality = residualShare == null ? null : Math.max(0, 100 - residualShare)
+  const residualShare =
+    bridge.attributionCoverage == null ? null : 100 - bridge.attributionCoverage
+  const attributionQuality = bridge.attributionCoverage
   const residualPctOfForecast = bridge.forecast === 0 ? null : (residual / Math.abs(bridge.forecast)) * 100
-  const bridgeUi = bridge.items.map((i) =>
-    i.key === 'other' ? { ...i, label: 'Unexplained Residual' } : i,
-  )
+  const bridgeUi = bridge.items
 
   const sortedGroups = useMemo(() => {
     const g = [...groups]
@@ -361,9 +357,10 @@ export function ExecutiveOverview() {
                   strong
                 />
               </div>
-              {residualShare != null && residualShare > 30 && (
+              {(bridge.attributionQualityWarning || (residualShare != null && residualShare > 30)) && (
                 <p className="mb-2 rounded-lg bg-amber-50 px-3 py-1.5 text-[13px] text-amber-900">
-                  Unexplained residual is {residualShare.toFixed(0)}% of driver movement — treat the driver split as indicative only.
+                  Attribution Quality Warning — {bridge.attributionNote} Coverage{' '}
+                  {attributionQuality == null ? 'N/A' : formatPercent(attributionQuality)}.
                 </p>
               )}
               <FloatingWaterfall steps={bridgeUi} height={250} />
@@ -413,7 +410,16 @@ export function ExecutiveOverview() {
         }
       >
         {sortedGroups.length === 0 ? (
-          <p className="rounded-lg border border-dashed border-slate-200 px-3 py-8 text-center text-xs text-ink-muted">No actions in scope</p>
+          <div className="rounded-lg border border-dashed border-slate-200 px-3 py-8 text-center text-xs text-ink-muted">
+            <p>No actionable exceptions under current filters.</p>
+            <button
+              type="button"
+              className="mt-2 font-medium text-brand-700 underline"
+              onClick={() => navigateWithContext('/actions', { sourcePage: '/executive' })}
+            >
+              Open Action Center
+            </button>
+          </div>
         ) : (
           <div className="overflow-auto rounded-lg border border-slate-200">
             <table className="min-w-full text-left text-[13px]">

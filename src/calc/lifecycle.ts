@@ -48,6 +48,62 @@ export function computeSalesPipeline(data: DataStore) {
     }
   })
 
+  // Stage aging from stage events when available; else sales_cycle_days / stages heuristic
+  const asOf = data.meta.generated_at?.slice(0, 10) ?? '2026-10-31'
+  const stageAging = openStages.map((stage) => {
+    const opps = open.filter((o) => o.stage === stage)
+    const days = opps.map((o) => {
+      const ev = data.opportunityStageEvents
+        ?.filter((e) => e.opportunity_id === o.opportunity_id && e.to_stage === stage)
+        .sort((a, b) => b.event_date.localeCompare(a.event_date))[0]
+      const start = ev?.event_date ?? o.created_date
+      const t0 = Date.parse(start)
+      const t1 = Date.parse(asOf)
+      return Number.isFinite(t0) && Number.isFinite(t1)
+        ? Math.max(0, Math.round((t1 - t0) / 86400000))
+        : o.sales_cycle_days ?? 0
+    })
+    const sorted = [...days].sort((a, b) => a - b)
+    const avg = days.length ? Math.round(days.reduce((a, b) => a + b, 0) / days.length) : null
+    const median = sorted.length
+      ? sorted.length % 2
+        ? sorted[Math.floor(sorted.length / 2)]
+        : Math.round((sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2)
+      : null
+    const stalled = days.filter((d) => d >= 45).length
+    return { stage, count: opps.length, avgDays: avg, medianDays: median, stalledCount: stalled }
+  })
+
+  const pastDueClose = open.filter((o) => o.expected_start_date && o.expected_start_date < asOf).length
+
+  // Pipeline coverage vs remaining quarterly bookings target (synthetic: 1.2× last-quarter Closed Won TCV)
+  const recentWonTcv = sumMoney(
+    closedWon
+      .filter((o) => (o.closed_date ?? '').slice(0, 7) >= '2026-07')
+      .map((o) => o.opportunity_value),
+  )
+  const remainingSalesTarget = money(Math.max(recentWonTcv * 0.35, weightedPipeline * 0.25, 1))
+  const pipelineCoverage = pct(weightedPipeline, remainingSalesTarget)
+
+  const winLossBySegment = (['Enterprise', 'Mid-Market', 'SMB'] as const).map((segment) => {
+    const won = closedWon.filter((o) => {
+      const c = data.customers.find((x) => x.customer_id === o.customer_id)
+      return c?.segment === segment
+    })
+    const lost = closedLost.filter((o) => {
+      const c = data.customers.find((x) => x.customer_id === o.customer_id)
+      return c?.segment === segment
+    })
+    const n = won.length + lost.length
+    return {
+      segment,
+      winRate: n ? pct(won.length, n) : null,
+      won: won.length,
+      lost: lost.length,
+      avgDeal: won.length ? money(sumMoney(won.map((o) => o.opportunity_value)) / won.length) : null,
+    }
+  })
+
   return {
     pipelineValue,
     weightedPipeline,
@@ -59,6 +115,13 @@ export function computeSalesPipeline(data: DataStore) {
     funnel: stageStock,
     stageStock,
     conversionHints,
+    stageAging,
+    pastDueClose,
+    remainingSalesTarget,
+    pipelineCoverage,
+    pipelineCoverageNote:
+      'Coverage = Weighted Open Pipeline ÷ synthetic remaining target (35% of recent Closed-Won TCV floor). Not a CRM quota system.',
+    winLossBySegment,
     note: 'Stage chart shows current stock by stage (independent counts). It is not a cascading conversion funnel — later stages can hold larger deals. Opportunity value ≠ recognized revenue.',
   }
 }

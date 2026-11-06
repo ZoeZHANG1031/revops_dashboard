@@ -10,6 +10,7 @@ import {
   HandCoins,
   HeartPulse,
   LayoutDashboard,
+  ListChecks,
   ListTodo,
   MapPinned,
   Package,
@@ -46,6 +47,7 @@ export const PAGE_META: Record<string, PageMeta> = {
   '/customers': { path: '/customers', label: 'Customer Intelligence', icon: UsersRound, question: 'Which customers create value — and which put revenue at risk?' },
   '/customer-360': { path: '/customer-360', label: 'Customer 360', icon: Users, question: 'What is happening inside this one customer account?' },
   '/unit-economics': { path: '/unit-economics', label: 'Unit Economics', icon: Wallet, question: 'What do we earn per package, and where does margin leak?' },
+  '/actions': { path: '/actions', label: 'Action Center', icon: ListChecks, question: 'What should we do next — and who owns it?' },
 }
 
 export const PAGE_ORDER = [
@@ -57,6 +59,7 @@ export const PAGE_ORDER = [
   '/customers',
   '/customer-360',
   '/unit-economics',
+  '/actions',
 ]
 
 export function pageMeta(path: string): PageMeta | undefined {

@@ -218,6 +218,7 @@ export function GlobalFiltersBar() {
             className="filter-input"
             value={dateBasis}
             onChange={(e) => setDateBasis(e.target.value as DateBasis)}
+            title="Labels the analysis context. Each KPI keeps its native date field (see metric tooltips) — never subtract KPIs with different date bases."
           >
             {DATE_BASIS.map((d) => (
               <option key={d.id} value={d.id}>

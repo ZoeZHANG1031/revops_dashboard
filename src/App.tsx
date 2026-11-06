@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AppShell } from '@/components/layout/AppShell'
 import { AppProvider } from '@/context/AppContext'
 import { CompanyOverview } from '@/pages/CompanyOverview'
+import { ActionCenterPage } from '@/pages/ActionCenter'
 import { Customer360 } from '@/pages/Customer360'
 import { CustomerIntelligence } from '@/pages/CustomerIntelligence'
 import { ExecutiveOverview } from '@/pages/ExecutiveOverview'
@@ -24,6 +25,7 @@ export default function App() {
             <Route path="/customers" element={<CustomerIntelligence />} />
             <Route path="/customer-360" element={<Customer360 />} />
             <Route path="/unit-economics" element={<UnitEconomics />} />
+            <Route path="/actions" element={<ActionCenterPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

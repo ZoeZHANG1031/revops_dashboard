@@ -238,13 +238,23 @@ export function RevenueLifecycle() {
         )}
       </ChartCard>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
         <Stat label="Pipeline Value" value={formatCurrency(sales.pipelineValue, true)} />
         <Stat label="Weighted Pipeline" value={formatCurrency(sales.weightedPipeline, true)} hint="Value × Win % · ≠ revenue" />
         <Stat label="Win Rate" value={formatPercent(sales.winRate)} />
         <Stat
           label="Avg Sales Cycle"
           value={sales.salesCycleLength != null ? `${sales.salesCycleLength} days` : '—'}
+        />
+        <Stat
+          label="Pipeline Coverage"
+          value={formatPercent(sales.pipelineCoverage)}
+          hint={sales.pipelineCoverageNote}
+        />
+        <Stat
+          label="Past-due close"
+          value={formatNumber(sales.pastDueClose)}
+          hint="Open opps with expected start before as-of"
         />
       </div>
 
@@ -333,6 +343,88 @@ export function RevenueLifecycle() {
             Closed Won logos: {sales.newCustomerAcquisition} · Open expected monthly revenue:{' '}
             {formatCurrency(sales.expectedMonthlyRevenue, true)} · Expected volume:{' '}
             {formatNumber(sales.expectedMonthlyVolume)} pkgs/mo
+          </p>
+          <div className="mt-3 grid gap-3 lg:grid-cols-2">
+            <div>
+              <p className="mb-1 text-xs font-semibold text-ink">Stage aging (open stock)</p>
+              <DataTable
+                rows={sales.stageAging.map((r) => ({ ...r, id: r.stage }))}
+                rowKey={(r) => r.stage}
+                searchable={false}
+                defaultPageSize={25}
+                columns={[
+                  { key: 's', header: 'Stage', render: (r) => r.stage },
+                  {
+                    key: 'n',
+                    header: 'Opps',
+                    align: 'right',
+                    render: (r) => formatNumber(r.count),
+                    sortValue: (r) => r.count,
+                  },
+                  {
+                    key: 'a',
+                    header: 'Avg days',
+                    align: 'right',
+                    render: (r) => (r.avgDays == null ? '—' : String(r.avgDays)),
+                    sortValue: (r) => r.avgDays ?? -1,
+                  },
+                  {
+                    key: 'm',
+                    header: 'Median',
+                    align: 'right',
+                    render: (r) => (r.medianDays == null ? '—' : String(r.medianDays)),
+                  },
+                  {
+                    key: 'st',
+                    header: 'Stalled ≥45d',
+                    align: 'right',
+                    render: (r) => formatNumber(r.stalledCount),
+                    sortValue: (r) => r.stalledCount,
+                  },
+                ]}
+              />
+            </div>
+            <div>
+              <p className="mb-1 text-xs font-semibold text-ink">Win / loss by segment</p>
+              <DataTable
+                rows={sales.winLossBySegment.map((r) => ({ ...r, id: r.segment }))}
+                rowKey={(r) => r.segment}
+                searchable={false}
+                defaultPageSize={25}
+                columns={[
+                  { key: 's', header: 'Segment', render: (r) => r.segment },
+                  {
+                    key: 'w',
+                    header: 'Win rate',
+                    align: 'right',
+                    render: (r) => formatPercent(r.winRate),
+                    sortValue: (r) => r.winRate ?? -1,
+                  },
+                  {
+                    key: 'won',
+                    header: 'Won',
+                    align: 'right',
+                    render: (r) => formatNumber(r.won),
+                  },
+                  {
+                    key: 'lost',
+                    header: 'Lost',
+                    align: 'right',
+                    render: (r) => formatNumber(r.lost),
+                  },
+                  {
+                    key: 'avg',
+                    header: 'Avg won deal',
+                    align: 'right',
+                    render: (r) => (r.avgDeal == null ? '—' : formatCurrency(r.avgDeal, true)),
+                  },
+                ]}
+              />
+            </div>
+          </div>
+          <p className="mt-2 text-[12px] text-ink-muted">
+            Target for coverage: {formatCurrency(sales.remainingSalesTarget, true)} (synthetic remaining
+            bookings target — not a CRM quota table).
           </p>
         </ChartCard>
 

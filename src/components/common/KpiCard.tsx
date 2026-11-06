@@ -1,7 +1,8 @@
-import { Info, MoreHorizontal, TrendingDown, TrendingUp } from 'lucide-react'
+import { MoreHorizontal, TrendingDown, TrendingUp } from 'lucide-react'
 import { useState } from 'react'
 import { KPI_DEFINITIONS } from '@/calc/kpiDefinitions'
 import { METRIC_REGISTRY, type MetricId } from '@/calc/metricRegistry'
+import { useApp } from '@/context/AppContext'
 import {
   interpretDelta,
   interpretLevel,
@@ -12,6 +13,7 @@ import {
 } from '@/lib/semantics'
 import { formatCurrency, formatPercent } from '@/lib/money'
 import { KpiDefinitionPanel } from './KpiDefinitionPanel'
+import { MetricDefinitionTip } from './MetricDefinitionTip'
 import { Sparkline } from './Sparkline'
 import type { KpiDefinition } from '@/types'
 
@@ -62,6 +64,7 @@ export function KpiCard({
 }: KpiCardProps) {
   const [open, setOpen] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const { dateBasis } = useApp()
   const registry = METRIC_REGISTRY[kpiId as MetricId]
   const def: KpiDefinition | undefined = registry
     ? {
@@ -129,8 +132,11 @@ export function KpiCard({
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
-          <p className="t-kpi-label uppercase text-ink-muted">
+          <p className="t-kpi-label flex items-center uppercase text-ink-muted">
             {def?.name ?? kpiId}
+            {METRIC_REGISTRY[kpiId as MetricId] && (
+              <MetricDefinitionTip metricId={kpiId} globalDateBasis={dateBasis} />
+            )}
           </p>
           <p className={`mt-1.5 font-mono text-ink ${size === 'primary' ? 't-kpi' : 'text-[24px] font-bold tracking-tight'}`}>
             {display}
