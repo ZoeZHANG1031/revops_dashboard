@@ -18,7 +18,7 @@ import { SalesCompensation } from '@/pages/SalesCompensation'
 
 export default function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, '') || undefined}>
       <AppProvider>
         <Routes>
           <Route element={<AppShell />}>

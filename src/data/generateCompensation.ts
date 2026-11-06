@@ -200,6 +200,7 @@ export function generateCompensationSlice(input: CompensationGenerateInput): Com
   const creditsByCustPeriod = new Map<string, number>()
   const invPeriod = new Map(input.invoices.map((i) => [i.invoice_id, i.accounting_period]))
   for (const cm of input.creditMemos) {
+    if (!cm.invoice_id) continue
     const period = invPeriod.get(cm.invoice_id)
     if (!period) continue
     const cid = input.invoices.find((i) => i.invoice_id === cm.invoice_id)?.customer_id

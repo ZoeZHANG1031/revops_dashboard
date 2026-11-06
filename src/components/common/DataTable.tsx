@@ -12,7 +12,7 @@ export interface Column<T> {
 
 const PAGE_SIZES = [25, 50, 100] as const
 
-export function DataTable<T extends { id?: string }>({
+export function DataTable<T>({
   rows,
   columns,
   rowKey,

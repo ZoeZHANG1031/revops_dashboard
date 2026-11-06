@@ -600,7 +600,7 @@ function simulateEligibilityPayout(
 
     let baseRate = 0
     let basis = e.basis_amount
-    let typeKey = e.eligibility_type
+    let typeKey: string = e.eligibility_type
     if (e.eligibility_type === 'New Acquisition') {
       baseRate = params.newAcquisitionRate
       typeKey = 'Acquisition'

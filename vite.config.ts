@@ -5,6 +5,8 @@ import tailwindcss from '@tailwindcss/vite'
 import { fileURLToPath, URL } from 'node:url'
 
 export default defineConfig({
+  // GitHub Pages project site: https://ZoeZHANG1031.github.io/revops_dashboard/
+  base: process.env.GITHUB_PAGES === 'true' ? '/revops_dashboard/' : '/',
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {

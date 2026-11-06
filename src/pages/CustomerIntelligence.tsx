@@ -815,11 +815,16 @@ const BAND_COLOR: Record<HealthBand, string> = {
   Critical: '#C44536',
 }
 
-type PortfolioFilter = 'atRisk' | 'decliningVolume' | 'marginCompression' | 'contractsExpiring90'
+type PortfolioFilter =
+  | 'atRisk'
+  | 'decliningVolume'
+  | 'marginCompression'
+  | 'contractsExpiring90'
+  | null
 type ColumnView = 'overview' | 'revenue' | 'profitability' | 'operations' | 'billing' | 'retention'
 type ExposureAxis = keyof CustomerRiskProfile['financialExposure']
 
-const PORTFOLIO_FILTER_LABELS: Record<PortfolioFilter, string> = {
+const PORTFOLIO_FILTER_LABELS: Record<Exclude<PortfolioFilter, null>, string> = {
   atRisk: 'At-Risk customers',
   decliningVolume: 'Declining volume',
   marginCompression: 'Margin compression',

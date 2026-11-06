@@ -76,8 +76,7 @@ function aggregateCustomerLines(
     net += l.net_amount
     credits += l.credits
     const ship = l.shipment_id ? metroIdx.get(l.shipment_id) : undefined
-    const metro =
-      ship?.metro ?? shipmentMetro(data, l.shipment_id, metroIdx) ?? 'UNKNOWN'
+    const metro = ship?.metro ?? shipmentMetro(data, l.shipment_id) ?? 'UNKNOWN'
     const station = ship?.station_id ?? 'UNKNOWN'
     const svc = l.service_type
 
