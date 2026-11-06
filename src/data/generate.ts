@@ -35,6 +35,7 @@ import type {
   FactOpportunityStageEvent,
   FactPayment,
   FactRevenueRecognition,
+  FactRevenueTarget,
   FactShipment,
   OpportunityStage,
   RegionCode,
@@ -53,6 +54,7 @@ import {
 } from './catalog'
 import { METRO_DEFINITIONS, REGIONS, type MetroDefinition } from './metros'
 import { SeededRng } from './rng'
+import { generateCompensationSlice } from './generateCompensation'
 
 const SEED = 20261031
 export const HISTORY_START = '2024-10'
@@ -1281,6 +1283,101 @@ export function generateDataStore(seed = SEED): DataStore {
     f.accounting_period <= HISTORY_END ? f.horizon_months === 1 : f.forecast_version === latestVersion,
   )
 
+  // Synthetic Management Plan — independent of Forecast (not Forecast × constant).
+  // Company targets sit slightly above Base run-rate with seeded monthly stretch; customer targets
+  // are allocated by share of Existing Base forecast so Gap analysis is meaningful.
+  const revenueTargets: FactRevenueTarget[] = []
+  const planDisclaimer =
+    'Synthetic Management Plan — illustrative targets, not a real board-approved budget.'
+  const targetRng = new SeededRng((seed ^ 0x52455654) >>> 0) // REV T — independent of shipment stream
+  const forwardPeriods = periodsFrom(addMonths(HISTORY_END, 1), FORECAST_END)
+  const baseExistingByPeriod = new Map<string, number>()
+  const baseExistingByCustPeriod = new Map<string, number>()
+  for (const f of forecasts) {
+    if (f.scenario !== 'Base' || f.forecast_type !== 'Existing') continue
+    if (f.accounting_period <= HISTORY_END) continue
+    baseExistingByPeriod.set(
+      f.accounting_period,
+      (baseExistingByPeriod.get(f.accounting_period) ?? 0) + f.forecast_recognized,
+    )
+    if (f.customer_id) {
+      const k = `${f.customer_id}|${f.accounting_period}`
+      baseExistingByCustPeriod.set(k, (baseExistingByCustPeriod.get(k) ?? 0) + f.forecast_recognized)
+    }
+  }
+  const basePipelineByPeriod = new Map<string, number>()
+  for (const f of forecasts) {
+    if (f.scenario !== 'Base' || f.forecast_type !== 'Pipeline') continue
+    if (f.accounting_period <= HISTORY_END) continue
+    basePipelineByPeriod.set(
+      f.accounting_period,
+      (basePipelineByPeriod.get(f.accounting_period) ?? 0) + f.forecast_recognized,
+    )
+  }
+  for (const period of forwardPeriods) {
+    const baseTotal =
+      (baseExistingByPeriod.get(period) ?? 0) + (basePipelineByPeriod.get(period) ?? 0)
+    // Stretch 3–9% above Base Total Business with seeded noise — not a fixed multiplier of Forecast alone
+    const stretch = 1.03 + targetRng.next() * 0.06
+    const companyTarget = r2(Math.max(baseTotal * stretch, baseTotal + 25_000))
+    const companyCmTarget = r2(companyTarget * 0.24)
+    revenueTargets.push({
+      target_id: `TGT-CO-${period}`,
+      period,
+      customer_id: null,
+      target_scope: 'Company',
+      target_revenue: companyTarget,
+      target_contribution_profit: companyCmTarget,
+      plan_version: 'MP-2026H2',
+      effective_date: `${HISTORY_END}-15`,
+      synthetic: true,
+      disclaimer: planDisclaimer,
+    })
+    const existingBase = baseExistingByPeriod.get(period) ?? 0
+    if (existingBase > 0) {
+      for (const [k, custFc] of baseExistingByCustPeriod) {
+        const [cid, p] = k.split('|')
+        if (p !== period || custFc <= 0) continue
+        const share = custFc / existingBase
+        // Customer targets share company stretch but keep independent residual (±2%)
+        const custStretch = stretch * (0.98 + targetRng.next() * 0.04)
+        const custTarget = r2(custFc * custStretch)
+        revenueTargets.push({
+          target_id: `TGT-${cid}-${period}`,
+          period,
+          customer_id: cid,
+          target_scope: 'Customer',
+          target_revenue: custTarget,
+          target_contribution_profit: r2(custTarget * 0.22),
+          plan_version: 'MP-2026H2',
+          effective_date: `${HISTORY_END}-15`,
+          synthetic: true,
+          disclaimer: planDisclaimer,
+        })
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------- sales compensation (synthetic)
+  const contractByCustomer = new Map<string, string>()
+  for (const ct of contracts) {
+    if (ct.status === 'Active' && !contractByCustomer.has(ct.customer_id)) {
+      contractByCustomer.set(ct.customer_id, ct.contract_id)
+    }
+  }
+  const compensation = generateCompensationSlice({
+    seed,
+    historyStart: HISTORY_START,
+    historyEnd: HISTORY_END,
+    asOfDate: AS_OF_DATE,
+    accountOwners: ACCOUNT_OWNERS,
+    customers: plans.map((p) => p.customer),
+    opportunities,
+    invoices,
+    creditMemos,
+    contractByCustomer,
+  })
+
   return {
     meta: {
       generated_at: generatedAt,
@@ -1321,7 +1418,16 @@ export function generateDataStore(seed = SEED): DataStore {
     costs,
     forecasts,
     forecastSnapshots,
+    revenueTargets,
     exceptions,
+    salesReps: compensation.salesReps,
+    compensationPlans: compensation.compensationPlans,
+    compensationPlanVersions: compensation.compensationPlanVersions,
+    salesQuotas: compensation.salesQuotas,
+    commissionEligibility: compensation.commissionEligibility,
+    commissionLedger: compensation.commissionLedger,
+    commissionPayments: compensation.commissionPayments,
+    commissionAuditExceptions: compensation.commissionAuditExceptions,
   }
 }
 

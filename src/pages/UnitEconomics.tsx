@@ -20,7 +20,9 @@ import {
   VARIABLE_COST_TYPES,
   type UnitEconDimension,
 } from '@/calc/unitEconomics'
+import { ModuleSubNav } from '@/components/layout/ModuleSubNav'
 import { PageHeader } from '@/components/common/PageHeader'
+import { REVENUE_PERFORMANCE_NAV } from '@/lib/icons'
 import { PALETTE } from '@/lib/icons'
 import { FloatingWaterfall } from '@/components/charts/FloatingWaterfall'
 import { StatTile } from '@/components/common/StatTile'
@@ -213,6 +215,7 @@ export function UnitEconomics() {
 
   return (
     <div className="space-y-5">
+      <ModuleSubNav items={REVENUE_PERFORMANCE_NAV} />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <PageHeader path="/unit-economics" scope="Contribution (before fixed) ≠ Operating Profit (after allocated fixed)" />
         <div className="flex flex-wrap items-center gap-2">

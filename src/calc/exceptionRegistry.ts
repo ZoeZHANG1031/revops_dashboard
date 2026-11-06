@@ -13,6 +13,7 @@ export type ExposureClass =
   | 'Margin Pressure'
   | 'Timing / Adjustment'
   | 'Data Quality'
+  | 'Compensation Audit'
 
 export interface ExceptionDefinition {
   typeId: string

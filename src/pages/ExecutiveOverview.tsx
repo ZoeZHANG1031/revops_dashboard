@@ -20,6 +20,7 @@ import {
 } from '@/calc/actionCenter'
 import { buildTopBusinessIssues } from '@/calc/executiveIssues'
 import { evaluateForecastAccuracy } from '@/calc/forecast'
+import { sumCompanyTargets } from '@/calc/forwardForecast'
 import { monthlyRevenueSeries } from '@/calc/kpis'
 import {
   computeDeliveryPerformanceImpact,
@@ -39,6 +40,7 @@ import { PageHeader } from '@/components/common/PageHeader'
 import { InfoTip, StatusIndicator } from '@/components/common/StatusIndicator'
 import { useApp } from '@/context/AppContext'
 import { exportToCsv } from '@/lib/export'
+import { addMonths, monthDiff } from '@/lib/filters'
 import { PALETTE } from '@/lib/icons'
 import { formatCurrency, formatCurrencyPrecise, formatNumber, formatPercent } from '@/lib/money'
 
@@ -70,6 +72,19 @@ export function ExecutiveOverview() {
     [data, deferredFilters, geoDim],
   )
   const flow = useMemo(() => computeShipmentToRevenueFlow(data, deferredFilters), [data, deferredFilters])
+  const windowMonths = useMemo(() => {
+    const n = monthDiff(filters.startPeriod, filters.endPeriod) + 1
+    return Array.from({ length: n }, (_, i) => addMonths(filters.startPeriod, i))
+  }, [filters.startPeriod, filters.endPeriod])
+  const companyTargetInWindow = useMemo(() => sumCompanyTargets(data, windowMonths), [data, windowMonths])
+  const hasCompanyTargets = useMemo(
+    () => data.revenueTargets.some((t) => t.target_scope === 'Company' && windowMonths.includes(t.period)),
+    [data.revenueTargets, windowMonths],
+  )
+  const revenueVsTargetPct =
+    hasCompanyTargets && companyTargetInWindow !== 0
+      ? ((m.recognizedRevenue - companyTargetInWindow) / Math.abs(companyTargetInWindow)) * 100
+      : null
 
   const comparable = m.forecastComparable
   const varPct =
@@ -170,7 +185,6 @@ export function ExecutiveOverview() {
     <div className="space-y-5">
       <PageHeader
         path="/executive"
-        title="Executive Revenue Command Center"
         scope={`${filters.startPeriod} → ${filters.endPeriod} · ${scenario}`}
         actions={
           <button
@@ -184,6 +198,27 @@ export function ExecutiveOverview() {
           </button>
         }
       />
+
+      <nav className="flex flex-wrap gap-2 text-xs" aria-label="Go to">
+        <span className="self-center font-semibold uppercase tracking-wide text-ink-muted">Go to</span>
+        {(
+          [
+            ['Revenue Performance', '/lifecycle'],
+            ['Revenue Forecasting', '/forecasting'],
+            ['Customer Portfolio', '/customers'],
+            ['Action Center', '/actions'],
+          ] as const
+        ).map(([label, path]) => (
+          <button
+            key={path}
+            type="button"
+            className="rounded-lg border border-[#dce6df] bg-white px-2.5 py-1 font-medium text-brand-700 hover:border-brand-400 hover:bg-brand-50"
+            onClick={() => navigateWithContext(path, { sourcePage: '/executive' })}
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
 
       {/* Level 1 — three headline KPIs */}
       <section className="grid gap-4 md:grid-cols-3">
@@ -223,6 +258,16 @@ export function ExecutiveOverview() {
 
       {/* Secondary summary */}
       <section className="grid gap-3 text-[13px] sm:grid-cols-3 xl:grid-cols-6">
+        <SummaryChip
+          label="Revenue vs Target"
+          value={hasCompanyTargets ? formatCurrency(m.recognizedRevenue, true) : 'N/A'}
+          note={
+            hasCompanyTargets
+              ? `Target ${formatCurrency(companyTargetInWindow, true)} (${formatPercent(revenueVsTargetPct)})`
+              : 'No company targets in window'
+          }
+          tip="Recognized revenue vs sum of company revenue targets for periods in scope — not forecast"
+        />
         <SummaryChip
           label="Forecast Variance"
           value={comparable ? formatCurrency(m.forecastVarianceExisting, true) : 'N/A'}
@@ -278,7 +323,11 @@ export function ExecutiveOverview() {
         </div>
       </section>
 
-      {/* Level 2 — Revenue vs forecast + variance bridge */}
+      <Collapsible
+        title="Deep dive — forecast & variance"
+        subtitle="Actual vs Existing Customer Forecast · Forecast Variance Bridge"
+        defaultOpen={false}
+      >
       <div className="grid gap-4 lg:grid-cols-2">
         <ChartCard
           icon="forecast"
@@ -368,6 +417,7 @@ export function ExecutiveOverview() {
           )}
         </ChartCard>
       </div>
+      </Collapsible>
 
       {/* Exposure classes — never added together */}
       <section>

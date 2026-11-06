@@ -337,8 +337,14 @@ function computeCustomerHealthFresh(
 
     const issues = issuesByCust.get(cust.customer_id) ?? []
     const issueImpact = sumMoney(issues.map((e) => e.financial_impact))
-    const disputeShare = revenue > 0 ? (issueImpact / revenue) * 100 : 0
-    const issueScore = clampScore(100 - Math.min(100, disputeShare * 12 + issues.length * 3))
+    // Billing quality: do NOT zero the score for a handful of open exceptions.
+    // Penalize (a) $ impact as % of revenue, (b) open count, (c) severity — with caps.
+    const disputeShare = revenue > 0 ? (issueImpact / Math.abs(revenue)) * 100 : 0
+    const amountPenalty = Math.min(40, disputeShare * 4) // 10% of rev → 40 pts
+    const countPenalty = Math.min(25, issues.length * 2) // 5 open → 10 pts
+    const criticalCount = issues.filter((e) => e.severity === 'Critical' || e.severity === 'High').length
+    const severityPenalty = Math.min(20, criticalCount * 5)
+    const issueScore = clampScore(100 - amountPenalty - countPenalty - severityPenalty)
     if (shipPkgs > 0 || issues.length > 0) observedBits++
 
     const claimsRate = shipPkgs === 0 ? null : money((a.claimsCost / shipPkgs) * 1000)

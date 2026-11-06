@@ -34,7 +34,9 @@ import {
 } from '@/components/common/InteractiveBusinessFlow'
 import { Collapsible } from '@/components/common/Collapsible'
 import { DrilldownLink } from '@/components/common/DrilldownLink'
+import { ModuleSubNav } from '@/components/layout/ModuleSubNav'
 import { PageHeader } from '@/components/common/PageHeader'
+import { REVENUE_PERFORMANCE_NAV } from '@/lib/icons'
 import { TraceabilityChain } from '@/components/common/TraceabilityChain'
 import { useApp } from '@/context/AppContext'
 import { exportToCsv } from '@/lib/export'
@@ -153,28 +155,38 @@ export function RevenueLifecycle() {
 
   return (
     <div className="space-y-5">
+      <ModuleSubNav items={REVENUE_PERFORMANCE_NAV} />
       <PageHeader
         path="/lifecycle"
         scope="Commercial pipeline → contract activation → operational lifecycle · TCV ≠ revenue · Net Billing ≠ Recognized ≠ Cash"
         actions={
-          <button
-            type="button"
-            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium"
-            onClick={() =>
-              exportToCsv(
-                'lifecycle_stages.csv',
-                lifecycleFlow.map((s) => ({
-                  stage: s.label,
-                  metric: s.metricValue,
-                  activity: s.activity,
-                  period: `${filters.startPeriod}_${filters.endPeriod}`,
-                  disclaimer: 'Synthetic aggregate',
-                })),
-              )
-            }
-          >
-            Export Stages
-          </button>
+          <>
+            <button
+              type="button"
+              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium"
+              onClick={() => navigateWithContext('/sales-compensation')}
+            >
+              Sales Compensation
+            </button>
+            <button
+              type="button"
+              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium"
+              onClick={() =>
+                exportToCsv(
+                  'lifecycle_stages.csv',
+                  lifecycleFlow.map((s) => ({
+                    stage: s.label,
+                    metric: s.metricValue,
+                    activity: s.activity,
+                    period: `${filters.startPeriod}_${filters.endPeriod}`,
+                    disclaimer: 'Synthetic aggregate',
+                  })),
+                )
+              }
+            >
+              Export Stages
+            </button>
+          </>
         }
       />
 

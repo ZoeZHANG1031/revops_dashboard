@@ -28,6 +28,13 @@ All tables are synthetic (`synthetic: true`). Seed: `20241105`.
 | `fact_cost` | Cost event | `shipment_id` (nullable for allocated fixed), `cost_type` |
 | `fact_forecast` | Customer-period-scenario | `customer_id` (null for pipeline), `scenario`, `forecast_type` |
 | `fact_exception` | Detected anomaly | Optional `shipment_id` / `invoice_id` / `billing_line_id` |
+| `dim_sales_rep` | Sales rep | Maps `DimCustomer.account_owner` |
+| `dim_compensation_plan` / `fact_compensation_plan_version` | Plan + dated rates | Effective-dated commission rules (synthetic) |
+| `fact_sales_quota` | Rep × month | Quota basis = Eligible Revenue |
+| `fact_commission_eligibility` | Eligibility event | Links customer / opportunity / contract |
+| `fact_commission_ledger` | Earned line | Earned ≠ Approved ≠ Paid |
+| `fact_commission_payment` | Payout batch | Links ledger ids |
+| `fact_commission_audit_exception` | Comp audit | Investigation only — not booked loss |
 
 ## Metric separation
 

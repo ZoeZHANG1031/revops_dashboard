@@ -10,6 +10,7 @@ import { RevenueForecasting } from '@/pages/RevenueForecasting'
 import { RevenueLifecycle } from '@/pages/RevenueLifecycle'
 import { RevenueReconciliation } from '@/pages/RevenueReconciliation'
 import { UnitEconomics } from '@/pages/UnitEconomics'
+import { SalesCompensation } from '@/pages/SalesCompensation'
 
 export default function App() {
   return (
@@ -17,7 +18,8 @@ export default function App() {
       <AppProvider>
         <Routes>
           <Route element={<AppShell />}>
-            <Route path="/" element={<CompanyOverview />} />
+            <Route path="/" element={<Navigate to="/executive" replace />} />
+            <Route path="/company" element={<CompanyOverview />} />
             <Route path="/executive" element={<ExecutiveOverview />} />
             <Route path="/lifecycle" element={<RevenueLifecycle />} />
             <Route path="/reconciliation" element={<RevenueReconciliation />} />
@@ -25,8 +27,13 @@ export default function App() {
             <Route path="/customers" element={<CustomerIntelligence />} />
             <Route path="/customer-360" element={<Customer360 />} />
             <Route path="/unit-economics" element={<UnitEconomics />} />
+            <Route path="/sales-compensation" element={<SalesCompensation />} />
             <Route path="/actions" element={<ActionCenterPage />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
+            <Route path="/revenue/flow" element={<Navigate to="/lifecycle" replace />} />
+            <Route path="/revenue/billing" element={<Navigate to="/reconciliation" replace />} />
+            <Route path="/revenue/profitability" element={<Navigate to="/unit-economics" replace />} />
+            <Route path="/compensation" element={<Navigate to="/sales-compensation" replace />} />
+            <Route path="*" element={<Navigate to="/executive" replace />} />
           </Route>
         </Routes>
       </AppProvider>

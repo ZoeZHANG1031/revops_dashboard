@@ -13,16 +13,8 @@ function PageCrumb({ path }: { path: string }) {
   )
 }
 
-const PAGE_LABELS: Record<string, string> = {
-  '/': 'Company Overview',
-  '/executive': 'Executive Overview',
-  '/lifecycle': 'Revenue Lifecycle',
-  '/reconciliation': 'Reconciliation',
-  '/forecasting': 'Forecasting',
-  '/customers': 'Customer Intelligence',
-  '/customer-360': 'Customer 360',
-  '/actions': 'Action Center',
-  '/unit-economics': 'Unit Economics',
+function pageLabel(path: string): string {
+  return pageMeta(path)?.label ?? path
 }
 
 export function InvestigationBreadcrumb() {
@@ -63,15 +55,15 @@ export function InvestigationBreadcrumb() {
   const crumbs: { key: string; label: string; clear?: () => void }[] = [
     {
       key: 'home',
-      label: 'Company Overview',
-      clear: () => navigateWithContext('/', { sourcePage: null }),
+      label: pageLabel('/executive'),
+      clear: () => navigateWithContext('/executive', { sourcePage: null }),
     },
   ]
 
-  if (navPath.length === 0 && investigation.sourcePage && investigation.sourcePage !== '/') {
+  if (navPath.length === 0 && investigation.sourcePage && investigation.sourcePage !== '/executive') {
     crumbs.push({
       key: 'source',
-      label: PAGE_LABELS[investigation.sourcePage] ?? investigation.sourcePage,
+      label: pageLabel(investigation.sourcePage),
       clear: () => navigateWithContext(investigation.sourcePage!),
     })
   }
@@ -188,7 +180,7 @@ export function InvestigationBreadcrumb() {
               type="button"
               className="rounded px-1 font-medium text-brand-700 hover:bg-white hover:underline"
               onClick={() => c.clear?.()}
-              title={i === 0 ? 'Return to Company Overview' : 'Clear or jump'}
+              title={i === 0 ? 'Return to Executive Command Center' : 'Clear or jump'}
             >
               {c.label}
             </button>
@@ -212,7 +204,7 @@ export function InvestigationBreadcrumb() {
           className="ml-auto text-xs text-ink-muted hover:text-ink"
           onClick={() => {
             clearInvestigation()
-            navigateWithContext('/')
+            navigateWithContext('/executive')
           }}
         >
           Exit investigation

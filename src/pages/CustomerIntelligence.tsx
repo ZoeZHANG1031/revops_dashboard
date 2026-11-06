@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   Bar,
   BarChart,
@@ -17,6 +17,12 @@ import {
   ZAxis,
 } from 'recharts'
 import { computeCustomerHealth, type HealthBand } from '@/calc/customerHealth'
+import {
+  buildCustomerRiskProfile,
+  computePortfolioRiskKpis,
+  type CustomerRiskProfile,
+  type RiskType,
+} from '@/calc/customerRisk'
 import { StatTile } from '@/components/common/StatTile'
 import { ChartCard } from '@/components/common/ChartCard'
 import { Collapsible } from '@/components/common/Collapsible'
@@ -29,7 +35,6 @@ import { DrilldownLink } from '@/components/common/DrilldownLink'
 import { shortLabel } from '@/lib/labels'
 import { PageHeader } from '@/components/common/PageHeader'
 import { InfoTip } from '@/components/common/StatusIndicator'
-import { PALETTE } from '@/lib/icons'
 import { filterExceptions } from '@/lib/filters'
 import { formatCurrency, formatCurrencyPrecise, formatNumber, formatPercent } from '@/lib/money'
 
@@ -45,6 +50,9 @@ export function CustomerIntelligence() {
     setHighlightCustomerId,
   } = useApp()
   const [selectedId, setSelectedId] = useState<string | null>(highlightCustomerId)
+  const [portfolioFilter, setPortfolioFilter] = useState<PortfolioFilter>(null)
+  const [columnView, setColumnView] = useState<ColumnView>('overview')
+  const [exposureAxis, setExposureAxis] = useState<ExposureAxis>('scenarioRaR')
 
   const allRows = useMemo(
     () => computeCustomerHealth(data, filters, healthWeights),
@@ -57,37 +65,41 @@ export function CustomerIntelligence() {
     () => (dimensional ? allRows.filter((r) => r.revenue !== 0 || r.volume > 0) : allRows),
     [allRows, dimensional],
   )
+  const profiles = useMemo(
+    () => rows.map((row) => buildCustomerRiskProfile(row, data, filters)),
+    [rows, data, filters],
+  )
+  const portfolioKpis = useMemo(() => computePortfolioRiskKpis(profiles), [profiles])
+  const filteredProfiles = useMemo(
+    () => applyPortfolioFilter(profiles, portfolioFilter),
+    [profiles, portfolioFilter],
+  )
   const portfolio = useMemo(() => {
-    const total = rows.reduce((a, r) => a + Math.max(0, r.revenue), 0)
-    const shares = rows.map((r) => (total === 0 ? 0 : Math.max(0, r.revenue) / total)).sort((a, b) => b - a)
-    const top = (n: number) => (total === 0 ? null : shares.slice(0, n).reduce((a, x) => a + x, 0) * 100)
-    const hhi = total === 0 ? null : shares.reduce((a, x) => a + x * x, 0)
-    const rar = rows.reduce((a, r) => a + r.scenarioRevenueAtRisk, 0)
-    const atRisk = rows.filter((r) => r.healthBand === 'At Risk' || r.healthBand === 'Critical')
+    const total = profiles.reduce((a, r) => a + Math.max(0, r.revenue), 0)
     const bandRar = (['Critical', 'At Risk', 'Watchlist', 'Healthy'] as HealthBand[]).map((band) => ({
       band,
-      customers: rows.filter((r) => r.healthBand === band).length,
-      rar: Math.round(rows.filter((r) => r.healthBand === band).reduce((a, r) => a + r.scenarioRevenueAtRisk, 0) * 100) / 100,
-      revenue: Math.round(rows.filter((r) => r.healthBand === band).reduce((a, r) => a + r.revenue, 0) * 100) / 100,
+      customers: profiles.filter((r) => r.healthBand === band).length,
+      rar: Math.round(profiles.filter((r) => r.healthBand === band).reduce((a, r) => a + r.scenarioRevenueAtRisk, 0) * 100) / 100,
+      revenue: Math.round(profiles.filter((r) => r.healthBand === band).reduce((a, r) => a + r.revenue, 0) * 100) / 100,
     }))
     return {
       total,
-      top1: top(1),
-      top3: top(3),
-      top5: top(5),
-      hhi,
-      rar,
-      atRiskCount: atRisk.length,
-      atRiskRevenue: atRisk.reduce((a, r) => a + r.revenue, 0),
+      rar: portfolioKpis.scenarioRevenueAtRiskTotal,
       bandRar,
-      growthAvailable: rows.some((r) => r.revenueGrowth != null),
+      growthAvailable: profiles.some((r) => r.revenueGrowth != null),
     }
-  }, [rows])
+  }, [profiles, portfolioKpis.scenarioRevenueAtRiskTotal])
   const activeId = selectedId ?? highlightCustomerId
   // Customer 360 resolves from the full portfolio so it opens even when a metro/region scope hides the row
+  const allProfiles = useMemo(
+    () => allRows.map((row) => buildCustomerRiskProfile(row, data, filters)),
+    [allRows, data, filters],
+  )
   const selected =
-    rows.find((r) => r.customerId === activeId) ?? allRows.find((r) => r.customerId === activeId) ?? null
-  const selectedOutOfScope = Boolean(selected && !rows.some((r) => r.customerId === selected.customerId))
+    profiles.find((r) => r.customerId === activeId) ??
+    allProfiles.find((r) => r.customerId === activeId) ??
+    null
+  const selectedOutOfScope = Boolean(selected && !profiles.some((r) => r.customerId === selected.customerId))
 
   const selectCustomer = (customerId: string, customerName: string) => {
     setSelectedId(customerId)
@@ -108,26 +120,6 @@ export function CustomerIntelligence() {
     // only on arrival
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  // Reference lines: company CM (revenue-weighted) and segment median growth (N/A excluded, never zero-filled)
-  const companyCm = useMemo(() => {
-    const rev = rows.reduce((a, r) => a + r.revenue, 0)
-    const contrib = rows.reduce((a, r) => a + (r.contributionMargin == null ? 0 : (r.revenue * r.contributionMargin) / 100), 0)
-    return rev === 0 ? null : (contrib / rev) * 100
-  }, [rows])
-  const segmentMedians = useMemo(() => {
-    const med = (xs: number[]) => {
-      if (!xs.length) return null
-      const v = [...xs].sort((a, b) => a - b)
-      const m = Math.floor(v.length / 2)
-      return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2
-    }
-    return (['Enterprise', 'Mid-Market', 'SMB'] as const).map((seg, i) => ({
-      segment: seg,
-      color: PALETTE.segment[i],
-      median: med(rows.filter((r) => r.segment === seg && r.revenueGrowth != null).map((r) => r.revenueGrowth!)),
-    }))
-  }, [rows])
 
   const normalizedWeights = useMemo(() => {
     const sum =
@@ -207,33 +199,52 @@ export function CustomerIntelligence() {
     }
   }, [selected, data, filters])
 
-  // Computed insights
-  const belowCm = companyCm == null ? [] : rows.filter((r) => r.contributionMargin != null && r.contributionMargin < companyCm)
-  const shrinking = rows.filter((r) => r.revenueGrowth != null && r.revenueGrowth < 0)
-  const both = belowCm.filter((r) => r.revenueGrowth != null && r.revenueGrowth < 0)
-  const matrixInsight = portfolio.growthAvailable
-    ? `${belowCm.length} of ${rows.length} customers run below company CM${companyCm != null ? ` (${companyCm.toFixed(1)}%)` : ''}; ${shrinking.length} are shrinking${both.length ? ` — ${both.map((r) => r.customerName).slice(0, 2).join(', ')}${both.length > 2 ? ` +${both.length - 2}` : ''} are both` : ''}.`
-    : `Revenue growth N/A (insufficient history) — ${belowCm.length} of ${rows.length} customers run below company CM.`
+  const matrixInsight = `${filteredProfiles.length} customers in view · bubble size = revenue · Y-axis = ${EXPOSURE_LABELS[exposureAxis]}. Click a portfolio KPI above to filter the scorecard.`
   const topBand = [...portfolio.bandRar].sort((a, b) => b.rar - a.rar)[0]
   const rarInsight =
     topBand && portfolio.rar > 0
       ? `${topBand.band} accounts carry ${formatPercent((topBand.rar / portfolio.rar) * 100)} of scenario revenue at risk (${formatCurrency(topBand.rar, true)} across ${topBand.customers} customers).`
       : null
 
-  const matrixRows = rows.filter(
-    (r) => r.contributionMargin != null && (portfolio.growthAvailable ? r.revenueGrowth != null : true),
-  )
+  const matrixRows = filteredProfiles.map((r) => ({
+    ...r,
+    exposure: r.financialExposure[exposureAxis],
+  }))
+  const scorecardColumns = useMemo(() => columnsForView(columnView), [columnView])
 
   return (
     <div className="space-y-5">
       <PageHeader
         path="/customers"
+        title="Customer Portfolio"
         scope="Health is an assumption-weighted score · loss probabilities are scenarios, not churn models"
         actions={
           <button
             type="button"
             className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium"
-            onClick={() => exportToCsv('customer_performance.csv', rows.map((r) => ({ ...r })))}
+            onClick={() =>
+              exportToCsv(
+                'customer_performance.csv',
+                filteredProfiles.map((r) => ({
+                  customerId: r.customerId,
+                  customerName: r.customerName,
+                  segment: r.segment,
+                  industry: r.industry,
+                  revenue: r.revenue,
+                  revenueGrowth: r.revenueGrowth,
+                  contributionMargin: r.contributionMargin,
+                  healthScore: r.healthScore,
+                  healthBand: r.healthBand,
+                  riskTypes: r.riskTypes.join('; '),
+                  scenarioRaR: r.scenarioRevenueAtRisk,
+                  daysUntilRenewal: r.daysUntilRenewal,
+                  openAr: r.openAr,
+                  overdueAr: r.overdueAr,
+                  portfolioFilter: portfolioFilter ?? 'none',
+                  columnView,
+                })),
+              )
+            }
           >
             Export Customer Performance
           </button>
@@ -250,26 +261,62 @@ export function CustomerIntelligence() {
         </p>
       )}
 
-      {/* Level 1 — portfolio status */}
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <PortfolioStat label="Customers in scope" value={formatNumber(rows.length)} hint={`${formatCurrency(portfolio.total, true)} Net Billing`} />
-        <PortfolioStat
-          label="Top-3 Concentration"
-          value={formatPercent(portfolio.top3)}
-          hint={`Top-1 ${formatPercent(portfolio.top1)} · HHI ${portfolio.hhi != null ? portfolio.hhi.toFixed(3) : '—'}`}
-          tone={portfolio.top3 == null ? undefined : portfolio.top3 > 60 ? 'bad' : portfolio.top3 > 40 ? 'warn' : 'good'}
+      <p className="text-[13px] text-ink-muted">
+        {formatNumber(profiles.length)} customers · {formatCurrency(portfolio.total, true)} net billing in scope
+        {portfolioFilter ? (
+          <button
+            type="button"
+            className="ml-2 inline-flex items-center gap-1 rounded-full border border-brand-700/30 bg-[#f5f8f5] px-2 py-0.5 text-xs font-medium text-brand-800"
+            onClick={() => setPortfolioFilter(null)}
+          >
+            Filter: {PORTFOLIO_FILTER_LABELS[portfolioFilter]} ×
+          </button>
+        ) : null}
+      </p>
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <FilterablePortfolioStat
+          label="At-Risk Customers"
+          value={formatNumber(portfolioKpis.atRiskCustomers)}
+          hint="Health band At Risk or Critical"
+          active={portfolioFilter === 'atRisk'}
+          onClick={() => setPortfolioFilter(portfolioFilter === 'atRisk' ? null : 'atRisk')}
+          tone={portfolioKpis.atRiskCustomers === 0 ? 'good' : 'warn'}
         />
-        <PortfolioStat
-          label="At Risk / Critical"
-          value={formatNumber(portfolio.atRiskCount)}
-          hint={`${formatCurrency(portfolio.atRiskRevenue, true)} revenue in these accounts`}
-          tone={portfolio.atRiskCount === 0 ? 'good' : 'warn'}
+        <FilterablePortfolioStat
+          label="Revenue from At-Risk Customers"
+          value={formatCurrency(portfolioKpis.revenueFromAtRisk, true)}
+          hint="Current-period revenue in at-risk bands — not Scenario RaR"
+          tip="NOT equal to Scenario RaR — this is current revenue of at-risk accounts"
+          active={portfolioFilter === 'atRisk'}
+          onClick={() => setPortfolioFilter(portfolioFilter === 'atRisk' ? null : 'atRisk')}
+          tone={portfolioKpis.revenueFromAtRisk > 0 ? 'warn' : 'good'}
         />
-        <PortfolioStat
-          label="Scenario Revenue at Risk"
-          value={formatCurrency(portfolio.rar, true)}
-          hint="Assumed loss × expected revenue — not booked"
-          tone={portfolio.rar > 0 ? 'warn' : 'good'}
+        <FilterablePortfolioStat
+          label="Contribution Profit at Risk"
+          value={formatCurrency(portfolioKpis.contributionProfitAtRisk, true)}
+          hint="Sum of contribution profit for at-risk bands"
+          active={portfolioFilter === 'atRisk'}
+          onClick={() => setPortfolioFilter(portfolioFilter === 'atRisk' ? null : 'atRisk')}
+        />
+        <FilterablePortfolioStat
+          label="Customers with Declining Volume"
+          value={formatNumber(portfolioKpis.decliningVolumeCount)}
+          active={portfolioFilter === 'decliningVolume'}
+          onClick={() => setPortfolioFilter(portfolioFilter === 'decliningVolume' ? null : 'decliningVolume')}
+        />
+        <FilterablePortfolioStat
+          label="Customers with Margin Compression"
+          value={formatNumber(portfolioKpis.marginCompressionCount)}
+          active={portfolioFilter === 'marginCompression'}
+          onClick={() => setPortfolioFilter(portfolioFilter === 'marginCompression' ? null : 'marginCompression')}
+        />
+        <FilterablePortfolioStat
+          label="Contracts Expiring Within 90 Days"
+          value={formatNumber(portfolioKpis.contractsExpiring90d)}
+          active={portfolioFilter === 'contractsExpiring90'}
+          onClick={() => setPortfolioFilter(portfolioFilter === 'contractsExpiring90' ? null : 'contractsExpiring90')}
+          tone={portfolioKpis.contractsExpiring90d > 0 ? 'warn' : 'good'}
         />
       </div>
 
@@ -331,31 +378,36 @@ export function CustomerIntelligence() {
           title="Customer Portfolio Risk Matrix"
           emphasis
           insight={matrixInsight}
-          subtitle={`Bubble = revenue · color = health band${portfolio.growthAvailable ? ' · growth N/A customers excluded (not zero-filled)' : ''} · click a bubble → Customer 360`}
-          businessQuestion="Which accounts combine soft growth with weak margin?"
-          formula="Growth from half-window comparison; CM% = (Net Billing − var cost) / Net Billing"
-          source="computeCustomerHealth"
+          subtitle="X = health score · Y = financial exposure · bubble = revenue · color = health band · click → Customer 360"
+          businessQuestion="Which accounts combine weak health with large financial exposure?"
+          formula="Exposure from buildCustomerRiskProfile · health from computeCustomerHealth"
+          source="buildCustomerRiskProfile"
+          action={
+            <select
+              className="rounded border border-[#dce6df] bg-white px-2 py-1 text-xs"
+              value={exposureAxis}
+              onChange={(e) => setExposureAxis(e.target.value as ExposureAxis)}
+            >
+              {(Object.keys(EXPOSURE_LABELS) as ExposureAxis[]).map((k) => (
+                <option key={k} value={k}>
+                  Y: {EXPOSURE_LABELS[k]}
+                </option>
+              ))}
+            </select>
+          }
         >
-          {rows.filter((r) => r.revenueGrowth != null && r.contributionMargin != null).length === 0 ? (
-            <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">
-              Insufficient history for Revenue Growth — showing health × margin fallback below. Growth axis
-              requires comparable prior window.
-            </p>
-          ) : null}
           <div className="h-80">
             <ResponsiveContainer width="100%" height="100%">
               <ScatterChart margin={{ top: 10, right: 16, bottom: 18, left: 4 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#dce6df" />
                 <XAxis
                   type="number"
-                  dataKey={
-                    rows.some((r) => r.revenueGrowth != null) ? 'revenueGrowth' : 'healthScore'
-                  }
-                  name={rows.some((r) => r.revenueGrowth != null) ? 'Growth %' : 'Health'}
+                  dataKey="healthScore"
+                  name="Health"
+                  domain={[0, 100]}
                   tick={{ fontSize: 12 }}
-                  unit={rows.some((r) => r.revenueGrowth != null) ? '%' : ''}
                   label={{
-                    value: rows.some((r) => r.revenueGrowth != null) ? 'Revenue growth % (late vs early half)' : 'Health score (growth N/A)',
+                    value: 'Health score (0–100)',
                     position: 'insideBottom',
                     offset: -12,
                     fontSize: 12,
@@ -364,34 +416,23 @@ export function CustomerIntelligence() {
                 />
                 <YAxis
                   type="number"
-                  dataKey="contributionMargin"
-                  name="CM%"
+                  dataKey="exposure"
+                  name="Exposure"
                   tick={{ fontSize: 12 }}
-                  unit="%"
-                  width={48}
-                  label={{ value: 'Contribution margin %', angle: -90, position: 'insideLeft', offset: 10, fontSize: 12, fill: '#4a635e' }}
+                  width={56}
+                  tickFormatter={(v) => `$${(Number(v) / 1000).toFixed(0)}k`}
+                  label={{
+                    value: EXPOSURE_LABELS[exposureAxis],
+                    angle: -90,
+                    position: 'insideLeft',
+                    offset: 10,
+                    fontSize: 11,
+                    fill: '#4a635e',
+                  }}
                 />
                 <ZAxis type="number" dataKey="revenue" range={[40, 280]} />
-                {companyCm != null && (
-                  <ReferenceLine
-                    y={companyCm}
-                    stroke={PALETTE.brandMid}
-                    strokeDasharray="4 3"
-                    label={{ value: `Company CM ${companyCm.toFixed(1)}%`, position: 'insideTopRight', fontSize: 12, fill: PALETTE.brandMid }}
-                  />
-                )}
-                {portfolio.growthAvailable &&
-                  segmentMedians
-                    .filter((sm) => sm.median != null)
-                    .map((sm) => (
-                      <ReferenceLine
-                        key={sm.segment}
-                        x={sm.median!}
-                        stroke={sm.color}
-                        strokeDasharray="3 3"
-                        label={{ value: `${sm.segment} median`, position: 'insideBottomLeft', angle: -90, fontSize: 12, fill: sm.color }}
-                      />
-                    ))}
+                <ReferenceLine x={50} stroke="#E58A2B" strokeDasharray="4 3" />
+                <ReferenceLine x={70} stroke="#7CB342" strokeDasharray="4 3" />
                 <Tooltip
                   cursor={{ strokeDasharray: '3 3' }}
                   wrapperStyle={{ zIndex: 50 }}
@@ -403,7 +444,12 @@ export function CustomerIntelligence() {
                         <p className="font-semibold text-ink">{r.customerName}</p>
                         <p className="text-ink-muted">{r.segment} · {r.healthBand} ({r.healthScore})</p>
                         <p className="font-mono">Revenue {formatCurrencyPrecise(r.revenue)}</p>
-                        <p className="font-mono">CM {formatPercent(r.contributionMargin)} · Growth {r.revenueGrowth == null ? 'N/A' : formatPercent(r.revenueGrowth)}</p>
+                        <p className="font-mono">
+                          {EXPOSURE_LABELS[exposureAxis]} {formatCurrencyPrecise(r.exposure)}
+                        </p>
+                        {r.riskTypes.length ? (
+                          <p className="mt-1 text-xs text-ink-muted">{r.riskTypes.join(' · ')}</p>
+                        ) : null}
                       </div>
                     )
                   }}
@@ -469,32 +515,11 @@ export function CustomerIntelligence() {
             </ResponsiveContainer>
           </div>
         </ChartCard>
-        <ChartCard icon="health" iconTone="customer" title="Health Distribution" businessQuestion="Is the portfolio polarized or clustered?">
-          <div className="h-52">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart
-                data={[
-                  { band: '<40', count: rows.filter((r) => r.healthScore < 40).length },
-                  { band: '40-54', count: rows.filter((r) => r.healthScore >= 40 && r.healthScore < 55).length },
-                  { band: '55-69', count: rows.filter((r) => r.healthScore >= 55 && r.healthScore < 70).length },
-                  { band: '70-84', count: rows.filter((r) => r.healthScore >= 70 && r.healthScore < 85).length },
-                  { band: '85+', count: rows.filter((r) => r.healthScore >= 85).length },
-                ]}
-              >
-                <CartesianGrid strokeDasharray="3 3" stroke="#dce6df" />
-                <XAxis dataKey="band" tick={{ fontSize: 12 }} />
-                <YAxis tick={{ fontSize: 12 }} allowDecimals={false} />
-                <Tooltip />
-                <Bar isAnimationActive={false} dataKey="count" fill="#123C35" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </ChartCard>
         <ChartCard icon="risk" iconTone="customer" title="Top Revenue at Risk" subtitle="Scenario assumed loss — not booked">
           <div className="h-52">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart
-                data={[...rows].sort((a, b) => b.revenueAtRisk - a.revenueAtRisk).slice(0, 8)}
+                data={[...filteredProfiles].sort((a, b) => b.scenarioRevenueAtRisk - a.scenarioRevenueAtRisk).slice(0, 8)}
                 layout="vertical"
               >
                 <CartesianGrid strokeDasharray="3 3" stroke="#dce6df" />
@@ -510,15 +535,15 @@ export function CustomerIntelligence() {
                 <YAxis type="category" dataKey="customerName" width={136} tick={{ fontSize: 12 }} tickFormatter={(v) => shortLabel(String(v), 18)} interval={0} />
                 <Tooltip formatter={(v) => formatCurrency(Number(v))} />
                 <Bar isAnimationActive={false}
-                  dataKey="revenueAtRisk"
+                  dataKey="scenarioRevenueAtRisk"
                   radius={[0, 4, 4, 0]}
                   onClick={(d) => {
                     const row = d as unknown as { customerId?: string; customerName?: string }
                     if (row.customerId) selectCustomer(row.customerId, row.customerName ?? row.customerId)
                   }}
                 >
-                  {[...rows]
-                    .sort((a, b) => b.revenueAtRisk - a.revenueAtRisk)
+                  {[...filteredProfiles]
+                    .sort((a, b) => b.scenarioRevenueAtRisk - a.scenarioRevenueAtRisk)
                     .slice(0, 8)
                     .map((r) => (
                       <Cell
@@ -539,80 +564,31 @@ export function CustomerIntelligence() {
         </ChartCard>
       </div>
 
-      <ChartCard icon="customers" iconTone="customer" title="Customer Scorecard" subtitle="Click a row to open Customer 360">
+      <ChartCard
+        icon="customers"
+        iconTone="customer"
+        title="Customer Scorecard"
+        subtitle={`${filteredProfiles.length} rows · click to open Customer 360`}
+        action={
+          <select
+            className="rounded border border-[#dce6df] bg-white px-2 py-1 text-xs"
+            value={columnView}
+            onChange={(e) => setColumnView(e.target.value as ColumnView)}
+          >
+            {COLUMN_VIEWS.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.label}
+              </option>
+            ))}
+          </select>
+        }
+      >
         <DataTable
-          rows={rows.map((r) => ({ ...r, id: r.customerId }))}
+          rows={filteredProfiles.map((r) => ({ ...r, id: r.customerId }))}
           rowKey={(r) => r.customerId}
           selectedKey={selectedId ?? highlightCustomerId}
           onRowClick={(r) => selectCustomer(r.customerId, r.customerName)}
-          columns={[
-            { key: 'name', header: 'Customer', render: (r) => r.customerName, sortValue: (r) => r.customerName },
-            { key: 'seg', header: 'Segment', render: (r) => r.segment },
-            {
-              key: 'rev',
-              header: 'Revenue',
-              align: 'right',
-              render: (r) => formatCurrency(r.revenue, true),
-              sortValue: (r) => r.revenue,
-            },
-            {
-              key: 'vol',
-              header: 'Volume',
-              align: 'right',
-              render: (r) => formatNumber(r.volume),
-              sortValue: (r) => r.volume,
-            },
-            {
-              key: 'growth',
-              header: 'Rev Growth Rate %',
-              align: 'right',
-              render: (r) => formatPercent(r.revenueGrowth),
-              sortValue: (r) => r.revenueGrowth ?? -999,
-            },
-            {
-              key: 'cm',
-              header: 'CM %',
-              align: 'right',
-              render: (r) => formatPercent(r.contributionMargin),
-              sortValue: (r) => r.contributionMargin ?? -999,
-            },
-            {
-              key: 'rpp',
-              header: 'Rev/Pkg',
-              align: 'right',
-              render: (r) => (r.revenuePerPackage != null ? formatCurrencyPrecise(r.revenuePerPackage) : '—'),
-            },
-            {
-              key: 'del',
-              header: 'Delivery',
-              align: 'right',
-              render: (r) => formatPercent(r.deliveryPerformance),
-            },
-            {
-              key: 'health',
-              header: 'Health / Band',
-              align: 'right',
-              render: (r) => (
-                <span className={r.healthScore < 70 ? 'text-danger font-semibold' : ''}>
-                  {r.healthScore} · {r.healthBand}
-                </span>
-              ),
-              sortValue: (r) => r.healthScore,
-            },
-            {
-              key: 'conf',
-              header: 'Data completeness',
-              render: (r) => `${r.dataCompleteness}% (${r.confidence})`,
-              sortValue: (r) => r.dataCompleteness,
-            },
-            {
-              key: 'rar',
-              header: 'Scenario RaR',
-              align: 'right',
-              render: (r) => formatCurrency(r.scenarioRevenueAtRisk, true),
-              sortValue: (r) => r.scenarioRevenueAtRisk,
-            },
-          ]}
+          columns={scorecardColumns}
         />
       </ChartCard>
 
@@ -625,6 +601,11 @@ export function CustomerIntelligence() {
           subtitle={`${selected.segment} · ${selected.region} · Health ${selected.healthScore} (${selected.healthBand})${selectedOutOfScope ? ' · not active in the current region/metro/service scope — showing period totals' : ''}`}
           action={
             <div className="flex flex-wrap items-center gap-2">
+              <DrilldownLink
+                to="/customer-360"
+                label="Full Customer 360"
+                onClick={() => selectCustomer(selected.customerId, selected.customerName)}
+              />
               <DrilldownLink
                 to="/unit-economics"
                 label="Profitability"
@@ -831,18 +812,328 @@ const BAND_COLOR: Record<HealthBand, string> = {
   Critical: '#C44536',
 }
 
-function PortfolioStat({
+type PortfolioFilter = 'atRisk' | 'decliningVolume' | 'marginCompression' | 'contractsExpiring90'
+type ColumnView = 'overview' | 'revenue' | 'profitability' | 'operations' | 'billing' | 'retention'
+type ExposureAxis = keyof CustomerRiskProfile['financialExposure']
+
+const PORTFOLIO_FILTER_LABELS: Record<PortfolioFilter, string> = {
+  atRisk: 'At-Risk customers',
+  decliningVolume: 'Declining volume',
+  marginCompression: 'Margin compression',
+  contractsExpiring90: 'Contracts expiring ≤90d',
+}
+
+const EXPOSURE_LABELS: Record<ExposureAxis, string> = {
+  currentRevenue: 'Current revenue',
+  scenarioRaR: 'Scenario RaR',
+  recoverableBilling: 'Recoverable billing',
+  contributionAtRisk: 'Contribution at risk',
+}
+
+const COLUMN_VIEWS: { id: ColumnView; label: string }[] = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'revenue', label: 'Revenue & Growth' },
+  { id: 'profitability', label: 'Profitability' },
+  { id: 'operations', label: 'Operations' },
+  { id: 'billing', label: 'Billing & Collections' },
+  { id: 'retention', label: 'Retention & Risk' },
+]
+
+function applyPortfolioFilter(rows: CustomerRiskProfile[], filter: PortfolioFilter | null) {
+  if (!filter) return rows
+  switch (filter) {
+    case 'atRisk':
+      return rows.filter((r) => r.healthBand === 'At Risk' || r.healthBand === 'Critical')
+    case 'decliningVolume':
+      return rows.filter((r) => r.riskTypes.includes('Volume Decline'))
+    case 'marginCompression':
+      return rows.filter((r) => r.riskTypes.includes('Margin Compression'))
+    case 'contractsExpiring90':
+      return rows.filter(
+        (r) => r.daysUntilRenewal != null && r.daysUntilRenewal >= 0 && r.daysUntilRenewal <= 90,
+      )
+    default:
+      return rows
+  }
+}
+
+function RiskChips({ types }: { types: RiskType[] }) {
+  if (!types.length) return <span className="text-ink-muted">—</span>
+  return (
+    <span className="flex max-w-[200px] flex-wrap gap-0.5">
+      {types.slice(0, 3).map((t) => (
+        <span key={t} className="rounded bg-[#eef4ef] px-1 py-0.5 text-[10px] text-ink-muted">
+          {t}
+        </span>
+      ))}
+      {types.length > 3 ? <span className="text-[10px] text-ink-muted">+{types.length - 3}</span> : null}
+    </span>
+  )
+}
+
+type ScoreCol = {
+  key: string
+  header: string
+  align?: 'left' | 'right'
+  render: (r: CustomerRiskProfile) => ReactNode
+  sortValue?: (r: CustomerRiskProfile) => string | number
+}
+
+function columnsForView(view: ColumnView): ScoreCol[] {
+  const base: ScoreCol[] = [
+    { key: 'name', header: 'Customer', render: (r) => r.customerName, sortValue: (r) => r.customerName },
+    { key: 'seg', header: 'Segment', render: (r) => r.segment },
+  ]
+  const byView: Record<ColumnView, ScoreCol[]> = {
+    overview: [
+      { key: 'ind', header: 'Industry', render: (r) => r.industry },
+      {
+        key: 'rev',
+        header: 'Revenue',
+        align: 'right',
+        render: (r) => formatCurrency(r.revenue, true),
+        sortValue: (r) => r.revenue,
+      },
+      {
+        key: 'growth',
+        header: 'Rev Growth %',
+        align: 'right',
+        render: (r) => formatPercent(r.revenueGrowth),
+        sortValue: (r) => r.revenueGrowth ?? -999,
+      },
+      {
+        key: 'cm',
+        header: 'CM %',
+        align: 'right',
+        render: (r) => formatPercent(r.contributionMargin),
+        sortValue: (r) => r.contributionMargin ?? -999,
+      },
+      {
+        key: 'health',
+        header: 'Health / Band',
+        align: 'right',
+        render: (r) => (
+          <span className={r.healthScore < 70 ? 'text-danger font-semibold' : ''}>
+            {r.healthScore} · {r.healthBand}
+          </span>
+        ),
+        sortValue: (r) => r.healthScore,
+      },
+      { key: 'risk', header: 'Risk Types', render: (r) => <RiskChips types={r.riskTypes} /> },
+      {
+        key: 'rar',
+        header: 'Scenario RaR',
+        align: 'right',
+        render: (r) => formatCurrency(r.scenarioRevenueAtRisk, true),
+        sortValue: (r) => r.scenarioRevenueAtRisk,
+      },
+      {
+        key: 'renew',
+        header: 'Days to Renewal',
+        align: 'right',
+        render: (r) => (r.daysUntilRenewal == null ? '—' : formatNumber(r.daysUntilRenewal)),
+        sortValue: (r) => r.daysUntilRenewal ?? 9999,
+      },
+    ],
+    revenue: [
+      {
+        key: 'rev',
+        header: 'Revenue',
+        align: 'right',
+        render: (r) => formatCurrency(r.revenue, true),
+        sortValue: (r) => r.revenue,
+      },
+      {
+        key: 'vol',
+        header: 'Volume',
+        align: 'right',
+        render: (r) => formatNumber(r.volume),
+        sortValue: (r) => r.volume,
+      },
+      {
+        key: 'vg',
+        header: 'Volume Growth %',
+        align: 'right',
+        render: (r) => formatPercent(r.volumeGrowth),
+        sortValue: (r) => r.volumeGrowth ?? -999,
+      },
+      {
+        key: 'growth',
+        header: 'Rev Growth %',
+        align: 'right',
+        render: (r) => formatPercent(r.revenueGrowth),
+        sortValue: (r) => r.revenueGrowth ?? -999,
+      },
+      {
+        key: 'rpp',
+        header: 'Rev/Pkg',
+        align: 'right',
+        render: (r) => (r.revenuePerPackage != null ? formatCurrencyPrecise(r.revenuePerPackage) : '—'),
+      },
+      {
+        key: 'prior',
+        header: 'Prior Rev',
+        align: 'right',
+        render: (r) => formatCurrency(r.priorRevenue, true),
+        sortValue: (r) => r.priorRevenue,
+      },
+    ],
+    profitability: [
+      {
+        key: 'contrib',
+        header: 'Contribution $',
+        align: 'right',
+        render: (r) => formatCurrency(r.contributionProfit, true),
+        sortValue: (r) => r.contributionProfit,
+      },
+      {
+        key: 'cm',
+        header: 'CM %',
+        align: 'right',
+        render: (r) => formatPercent(r.contributionMargin),
+        sortValue: (r) => r.contributionMargin ?? -999,
+      },
+      {
+        key: 'car',
+        header: 'Contrib. at Risk',
+        align: 'right',
+        render: (r) => formatCurrency(r.financialExposure.contributionAtRisk, true),
+        sortValue: (r) => r.financialExposure.contributionAtRisk,
+      },
+      {
+        key: 'prof',
+        header: 'Profit Score',
+        align: 'right',
+        render: (r) => String(r.profitScore),
+        sortValue: (r) => r.profitScore,
+      },
+    ],
+    operations: [
+      {
+        key: 'vol',
+        header: 'Volume',
+        align: 'right',
+        render: (r) => formatNumber(r.volume),
+        sortValue: (r) => r.volume,
+      },
+      {
+        key: 'del',
+        header: 'Delivery %',
+        align: 'right',
+        render: (r) => formatPercent(r.deliveryPerformance),
+      },
+      {
+        key: 'dscore',
+        header: 'Delivery Score',
+        align: 'right',
+        render: (r) => String(r.deliveryScore),
+        sortValue: (r) => r.deliveryScore,
+      },
+      {
+        key: 'util',
+        header: 'Commitment Util.',
+        align: 'right',
+        render: (r) => formatPercent(r.commitmentUtilization),
+        sortValue: (r) => r.commitmentUtilization ?? -999,
+      },
+    ],
+    billing: [
+      {
+        key: 'open',
+        header: 'Open AR',
+        align: 'right',
+        render: (r) => formatCurrency(r.openAr, true),
+        sortValue: (r) => r.openAr,
+      },
+      {
+        key: 'od',
+        header: 'Overdue AR',
+        align: 'right',
+        render: (r) => formatCurrency(r.overdueAr, true),
+        sortValue: (r) => r.overdueAr,
+      },
+      {
+        key: 'exc',
+        header: 'Open Exceptions',
+        align: 'right',
+        render: (r) => formatNumber(r.billingExceptionCount),
+        sortValue: (r) => r.billingExceptionCount,
+      },
+      {
+        key: 'pay',
+        header: 'Payment Score',
+        align: 'right',
+        render: (r) => String(r.paymentScore),
+        sortValue: (r) => r.paymentScore,
+      },
+      {
+        key: 'age',
+        header: 'Avg Overdue Age (d)',
+        align: 'right',
+        render: (r) => formatNumber(r.paymentAgingDays),
+        sortValue: (r) => r.paymentAgingDays,
+      },
+    ],
+    retention: [
+      {
+        key: 'health',
+        header: 'Health / Band',
+        render: (r) => `${r.healthScore} · ${r.healthBand}`,
+        sortValue: (r) => r.healthScore,
+      },
+      { key: 'risk', header: 'Risk Types', render: (r) => <RiskChips types={r.riskTypes} /> },
+      {
+        key: 'rar',
+        header: 'Scenario RaR',
+        align: 'right',
+        render: (r) => formatCurrency(r.scenarioRevenueAtRisk, true),
+        sortValue: (r) => r.scenarioRevenueAtRisk,
+      },
+      {
+        key: 'renew',
+        header: 'Days to Renewal',
+        align: 'right',
+        render: (r) => (r.daysUntilRenewal == null ? '—' : formatNumber(r.daysUntilRenewal)),
+        sortValue: (r) => r.daysUntilRenewal ?? 9999,
+      },
+      {
+        key: 'loss',
+        header: 'Assumed Loss %',
+        align: 'right',
+        render: (r) => formatPercent(r.assumedLossProbability * 100),
+        sortValue: (r) => r.assumedLossProbability,
+      },
+    ],
+  }
+  return [...base, ...byView[view]]
+}
+
+function FilterablePortfolioStat({
   label,
   value,
   hint,
+  tip,
   tone,
+  active,
+  onClick,
 }: {
   label: string
   value: string
   hint?: string
+  tip?: string
   tone?: 'good' | 'warn' | 'bad'
+  active?: boolean
+  onClick: () => void
 }) {
-  return <StatTile label={label} value={value} hint={hint} tone={tone} />
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`text-left transition ${active ? 'ring-2 ring-brand-700/40 rounded-xl' : ''}`}
+    >
+      <StatTile label={label} value={value} hint={hint} tone={tone} tip={tip} />
+    </button>
+  )
 }
 
 function Tile({ label, value, sub, warn, title }: { label: string; value: string; sub?: string; warn?: boolean; title?: string }) {

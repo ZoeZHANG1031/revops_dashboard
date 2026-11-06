@@ -58,7 +58,7 @@ export function GuidedInvestigation({ compact = false }: { compact?: boolean }) 
   const startGuide = (g: GuideDef, stepIndex = 0) => {
     const step = g.steps[stepIndex]
     navigateWithContext(step.path, {
-      sourcePage: '/',
+      sourcePage: '/company',
       investigationId: g.id,
       investigationTitle: g.question,
       investigationSteps: g.steps,

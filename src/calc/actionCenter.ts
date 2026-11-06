@@ -3,6 +3,7 @@ import { money, sumMoney } from '@/lib/money'
 import type { DataStore, FactException, GlobalFilters } from '@/types'
 import { EXCEPTION_REGISTRY, isOpenException, type ExposureClass } from './exceptionRegistry'
 import { computeCustomerHealth } from './customerHealth'
+import { filterCommissionAudits } from './salesCompensation'
 import { computeUnitEconomics } from './unitEconomics'
 
 /** Exposure classes from the Exception Registry — never summed into one "revenue loss" */
@@ -46,6 +47,7 @@ function urgencyFromSeverity(sev: string): number {
 }
 
 function confidenceFor(item: ActionItem): 'High' | 'Medium' | 'Low' {
+  if (item.category === 'Compensation Audit') return 'High' // ledger ↔ payment trace
   if (!item.sourceException) return 'Low' // derived (unit-economics paradox) or health-score scenario
   if (
     item.category === 'Recoverable Billing Exposure' ||
@@ -145,6 +147,27 @@ export function buildActionCenter(data: DataStore, filters: GlobalFilters): Acti
       })
     })
 
+  // Commission audit exceptions — investigation items; financial_impact ≠ booked loss
+  filterCommissionAudits(data, filters)
+    .filter((a) => a.status === 'Open' || a.status === 'Investigating')
+    .forEach((a) => {
+      items.push({
+        id: a.audit_id,
+        category: 'Compensation Audit',
+        title: a.audit_type,
+        financialImpact: a.financial_impact,
+        isBookedLoss: false,
+        severity: Math.abs(a.difference) > 5_000 ? 'High' : 'Medium',
+        owner: a.suggested_owner,
+        status: a.status,
+        rootCause: `${a.root_cause} · Expected ${a.expected_amount} vs Actual ${a.actual_amount} (not confirmed P&L loss).`,
+        recommendedAction: a.recommended_action,
+        customerId: a.customer_id,
+        actionability: 3,
+        confidence: 'High',
+      })
+    })
+
   const impacts = items.map((i) => i.financialImpact).sort((a, b) => a - b)
   const q = (p: number) => impacts[Math.min(impacts.length - 1, Math.floor(p * impacts.length))] ?? 0
   const t1 = q(1 / 3)
@@ -221,6 +244,7 @@ export function actionCategoryTotals(items: ActionItem[]) {
     'Customer Revenue Risk',
     'Billing Correction',
     'Margin Pressure',
+    'Compensation Audit',
   ]
   return cats.map((category) => ({
     category,

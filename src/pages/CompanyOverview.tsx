@@ -200,7 +200,7 @@ export function CompanyOverview() {
       metricLabel: 'Active customers',
       metricValue: formatNumber(model.scale.activeCustomers),
       available: true,
-      onClick: () => navigateWithContext('/customers', { sourcePage: '/' }),
+      onClick: () => navigateWithContext('/customers', { sourcePage: '/company' }),
     },
     {
       id: 'network',
@@ -209,7 +209,7 @@ export function CompanyOverview() {
       metricLabel: 'Shipments',
       metricValue: formatNumber(model.scale.shipmentVolume),
       available: true,
-      onClick: () => navigateWithContext('/executive', { sourcePage: '/' }),
+      onClick: () => navigateWithContext('/executive', { sourcePage: '/company' }),
     },
     {
       id: 'dsp',
@@ -219,7 +219,7 @@ export function CompanyOverview() {
       metricValue:
         model.scale.activeDspPartners != null ? formatNumber(model.scale.activeDspPartners) : 'N/A',
       available: model.scale.activeDspPartners != null,
-      onClick: () => navigateWithContext('/unit-economics', { sourcePage: '/' }),
+      onClick: () => navigateWithContext('/unit-economics', { sourcePage: '/company' }),
     },
     {
       id: 'delivery',
@@ -228,7 +228,7 @@ export function CompanyOverview() {
       metricLabel: 'Success rate',
       metricValue: formatPercent(model.scale.deliverySuccessRate),
       available: model.scale.deliverySuccessRate != null,
-      onClick: () => navigateWithContext('/executive', { sourcePage: '/' }),
+      onClick: () => navigateWithContext('/executive', { sourcePage: '/company' }),
     },
     {
       id: 'billing',
@@ -237,7 +237,7 @@ export function CompanyOverview() {
       metricLabel: 'Net Billing',
       metricValue: formatCurrency(model.scale.netBilling, true),
       available: true,
-      onClick: () => navigateWithContext('/lifecycle', { sourcePage: '/' }),
+      onClick: () => navigateWithContext('/lifecycle', { sourcePage: '/company' }),
     },
     {
       id: 'recognition',
@@ -249,7 +249,7 @@ export function CompanyOverview() {
           ? 'No records'
           : formatCurrency(model.scale.recognized.amount, true),
       available: model.scale.recognized.display !== 'no_records',
-      onClick: () => navigateWithContext('/reconciliation', { sourcePage: '/' }),
+      onClick: () => navigateWithContext('/reconciliation', { sourcePage: '/company' }),
     },
     {
       id: 'collection',
@@ -261,7 +261,7 @@ export function CompanyOverview() {
       onClick: () =>
         navigateWithContext('/reconciliation', {
           exceptionType: 'Overdue AR',
-          sourcePage: '/',
+          sourcePage: '/company',
         }),
     },
   ]
@@ -269,7 +269,7 @@ export function CompanyOverview() {
   return (
     <div className="space-y-5">
       <PageHeader
-        path="/"
+        path="/company"
         scope={model.periodLabel}
         actions={
           <>
@@ -325,7 +325,7 @@ export function CompanyOverview() {
             value={formatNumber(model.scale.activeCustomers)}
             sub="in period"
             hint={model.scale.activeDefinition}
-            onClick={() => navigateWithContext('/customers', { sourcePage: '/' })}
+            onClick={() => navigateWithContext('/customers', { sourcePage: '/company' })}
           />
           <Glance
             icon="shipments"
@@ -333,7 +333,7 @@ export function CompanyOverview() {
             value={formatNumber(model.scale.shipmentVolume)}
             sub="period total"
             hint="Period cumulative count of shipments by ship_date in the selected range."
-            onClick={() => navigateWithContext('/lifecycle', { sourcePage: '/' })}
+            onClick={() => navigateWithContext('/lifecycle', { sourcePage: '/company' })}
           />
           <Glance
             icon="geography"
@@ -356,7 +356,7 @@ export function CompanyOverview() {
                 : 'no capacity'
             }
             hint="Period packages ÷ (active station daily capacity × 30 × months). DSP partners remain available in Unit Economics."
-            onClick={() => navigateWithContext('/unit-economics', { sourcePage: '/' })}
+            onClick={() => navigateWithContext('/unit-economics', { sourcePage: '/company' })}
           />
           <Glance
             icon="billing"
@@ -364,7 +364,7 @@ export function CompanyOverview() {
             value={formatCurrency(model.scale.netBilling, true)}
             sub={model.growth.netBillingGrowth == null ? 'prior: insufficient history' : `${model.growth.netBillingGrowth >= 0 ? '+' : ''}${model.growth.netBillingGrowth.toFixed(1)}% vs prior window`}
             hint={`${scopeLabel}. Σ non-duplicate billing_line.net_amount by accounting_period. Not Recognized Revenue. Exact ${formatCurrencyPrecise(model.scale.netBilling)}.`}
-            onClick={() => navigateWithContext('/lifecycle', { sourcePage: '/' })}
+            onClick={() => navigateWithContext('/lifecycle', { sourcePage: '/company' })}
           />
           <Glance
             icon="contribution"
@@ -372,7 +372,7 @@ export function CompanyOverview() {
             value={formatPercent(model.scale.contributionMargin)}
             sub={`${formatCurrency(model.scale.contributionProfit, true)} contribution`}
             hint="(Net Billing − variable cost) ÷ Net Billing. Before allocated fixed cost — not Operating Profit."
-            onClick={() => navigateWithContext('/unit-economics', { sourcePage: '/' })}
+            onClick={() => navigateWithContext('/unit-economics', { sourcePage: '/company' })}
           />
         </div>
       </section>
@@ -406,7 +406,7 @@ export function CompanyOverview() {
                       metro: ins.actionExtras?.metro,
                       serviceType: ins.actionExtras?.serviceType,
                       exceptionType: ins.actionExtras?.exceptionType,
-                      sourcePage: '/',
+                      sourcePage: '/company',
                     })
                   }
                 >
@@ -464,7 +464,7 @@ export function CompanyOverview() {
                         navigateWithContext('/customers', {
                           metro: selectedMetro,
                           region: geoModel.metros.find((m) => m.metro === selectedMetro)?.region,
-                          sourcePage: '/',
+                          sourcePage: '/company',
                         })
                       }
                     >
@@ -477,7 +477,7 @@ export function CompanyOverview() {
                         navigateWithContext('/lifecycle', {
                           metro: selectedMetro,
                           region: geoModel.metros.find((m) => m.metro === selectedMetro)?.region,
-                          sourcePage: '/',
+                          sourcePage: '/company',
                         })
                       }
                     >
@@ -490,7 +490,7 @@ export function CompanyOverview() {
                         navigateWithContext('/unit-economics', {
                           metro: selectedMetro,
                           region: geoModel.metros.find((m) => m.metro === selectedMetro)?.region,
-                          sourcePage: '/',
+                          sourcePage: '/company',
                         })
                       }
                     >
@@ -762,7 +762,7 @@ export function CompanyOverview() {
                 onClick={(d) => {
                   const row = d as unknown as { serviceType?: ServiceType }
                   if (row.serviceType)
-                    navigateWithContext('/unit-economics', { serviceType: row.serviceType, sourcePage: '/' })
+                    navigateWithContext('/unit-economics', { serviceType: row.serviceType, sourcePage: '/company' })
                 }}
               />
             </BarChart>
@@ -894,7 +894,7 @@ export function CompanyOverview() {
             if (!r.investigatePath) return
             navigateWithContext(r.investigatePath, {
               exceptionType: r.investigateExtras?.exceptionType,
-              sourcePage: '/',
+              sourcePage: '/company',
             })
           }}
           columns={[

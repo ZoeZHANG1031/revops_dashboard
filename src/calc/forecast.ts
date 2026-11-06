@@ -61,13 +61,18 @@ export function computeDriverForecast(
         (f.customer_id != null && filters.customerIds.includes(f.customer_id))),
   )
 
-  const pipelineRows = data.forecasts.filter(
-    (f) =>
-      f.scenario === scenario &&
-      f.forecast_type === 'Pipeline' &&
-      f.accounting_period >= filters.startPeriod &&
-      f.accounting_period <= filters.endPeriod,
-  )
+  // Pipeline rows have customer_id null — only include at company grain.
+  // A customer filter must not inherit the whole-network pipeline (avoids double meaning).
+  const pipelineRows =
+    filters.customerIds.length > 0
+      ? []
+      : data.forecasts.filter(
+          (f) =>
+            f.scenario === scenario &&
+            f.forecast_type === 'Pipeline' &&
+            f.accounting_period >= filters.startPeriod &&
+            f.accounting_period <= filters.endPeriod,
+        )
 
   const baseParams = DEFAULT_SCENARIO_PARAMS[scenario]
   const volAdj = 1 + (params.volumeGrowth - baseParams.volumeGrowth)

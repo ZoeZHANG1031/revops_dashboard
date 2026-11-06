@@ -110,7 +110,7 @@ export function ActionCenterPage() {
         Exposure classes are listed separately and must not be summed into one “revenue loss” number.
       </p>
 
-      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         {byClass.map((c) => (
           <div key={c.category} className="rounded-lg border border-[#e1e9e4] bg-white px-3 py-2">
             <div className="text-[10px] font-semibold uppercase text-ink-muted">{c.category}</div>
@@ -200,6 +200,13 @@ export function ActionCenterPage() {
             },
           ]}
           onRowClick={(r) => {
+            if (r.category === 'Compensation Audit') {
+              navigateWithContext('/sales-compensation', {
+                customerId: r.customerId ?? undefined,
+                sourcePage: '/actions',
+              })
+              return
+            }
             if (r.category === 'Customer Revenue Risk' && r.customerId) {
               openCustomer360(r.customerId)
               return

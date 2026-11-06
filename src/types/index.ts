@@ -348,6 +348,21 @@ export interface FactForecast {
   synthetic: true
 }
 
+/** Synthetic management plan — independent of Forecast; not Actual */
+export interface FactRevenueTarget {
+  target_id: string
+  period: string
+  /** null = company total plan */
+  customer_id: string | null
+  target_scope: 'Company' | 'Customer'
+  target_revenue: number
+  target_contribution_profit: number | null
+  plan_version: string
+  effective_date: string
+  synthetic: true
+  disclaimer: string
+}
+
 export interface FactException {
   exception_id: string
   exception_type: ExceptionType
@@ -379,6 +394,177 @@ export interface FactOpportunityStageEvent {
   from_stage: OpportunityStage | null
   to_stage: OpportunityStage
   event_date: string
+  synthetic: true
+}
+
+/** Synthetic sales organization — maps DimCustomer.account_owner names */
+export interface DimSalesRep {
+  rep_id: string
+  rep_name: string
+  team: string
+  territory_region: RegionCode
+  manager_name: string
+  status: 'Active' | 'Inactive'
+  hire_date: string
+  synthetic: true
+}
+
+export type CommissionQuotaBasis = 'Eligible Revenue' | 'Eligible Bookings'
+export type CommissionEligibilityType =
+  | 'New Acquisition'
+  | 'Expansion'
+  | 'Revenue'
+  | 'Bonus'
+  | 'Clawback'
+
+export interface CommissionAcceleratorTier {
+  /** Inclusive lower attainment % (e.g. 100) */
+  from_attainment_pct: number
+  /** Exclusive upper attainment %; null = uncapped */
+  to_attainment_pct: number | null
+  /** Multiplier applied to incremental commission in this band */
+  rate_multiplier: number
+}
+
+/** Plan header — versions hold the effective rates */
+export interface DimCompensationPlan {
+  plan_id: string
+  plan_name: string
+  description: string
+  synthetic: true
+  synthetic_assumption: string
+}
+
+export interface FactCompensationPlanVersion {
+  plan_version_id: string
+  plan_id: string
+  version_label: string
+  effective_from: string
+  effective_to: string | null
+  quota_basis: CommissionQuotaBasis
+  /** Rate on Closed Won TCV for new-logo deals (bookings) */
+  new_acquisition_rate: number
+  /** Rate on positive expansion eligible revenue */
+  expansion_rate: number
+  /** Rate on ongoing eligible net billing (excludes acquisition month double-count) */
+  revenue_rate: number
+  /** Optional margin kicker: rate × contribution profit when CM% ≥ threshold */
+  margin_incentive_rate: number
+  margin_cm_threshold_pct: number
+  new_customer_bonus: number
+  expansion_bonus_pct: number
+  /** Share of credit memos clawed back from prior earned commission */
+  clawback_credit_rate: number
+  /** Optional hard cap on period payout; null = none */
+  commission_cap: number | null
+  accelerator_tiers: CommissionAcceleratorTier[]
+  synthetic: true
+  synthetic_assumption: string
+}
+
+export interface FactSalesQuota {
+  quota_id: string
+  rep_id: string
+  period: string
+  quota_amount: number
+  quota_basis: CommissionQuotaBasis
+  plan_version_id: string
+  synthetic: true
+}
+
+/** Source eligibility event before rate / accelerator application */
+export interface FactCommissionEligibility {
+  eligibility_id: string
+  rep_id: string
+  period: string
+  customer_id: string | null
+  opportunity_id: string | null
+  contract_id: string | null
+  eligibility_type: CommissionEligibilityType
+  /** Basis used for commission (never Recognized Revenue unless type says so) */
+  basis_amount: number
+  basis_label: string
+  plan_version_id: string
+  notes: string
+  synthetic: true
+}
+
+export type CommissionApprovalStatus = 'Pending' | 'Approved' | 'Rejected'
+export type CommissionPaymentStatus = 'Unpaid' | 'Partial' | 'Paid'
+
+export interface FactCommissionLedger {
+  ledger_id: string
+  eligibility_id: string
+  rep_id: string
+  period: string
+  customer_id: string | null
+  opportunity_id: string | null
+  contract_id: string | null
+  eligibility_type: CommissionEligibilityType
+  basis_amount: number
+  base_rate: number
+  accelerator_mult: number
+  /** Earned = basis × base_rate × accelerator_mult (+ bonuses folded into rate or separate rows) */
+  commission_earned: number
+  plan_version_id: string
+  approval_status: CommissionApprovalStatus
+  approved_amount: number
+  paid_amount: number
+  payment_id: string | null
+  calc_notes: string
+  synthetic: true
+}
+
+export interface FactCommissionPayment {
+  payment_id: string
+  rep_id: string
+  period: string
+  amount: number
+  paid_date: string
+  status: CommissionPaymentStatus
+  ledger_ids: string[]
+  synthetic: true
+}
+
+export type CommissionAuditType =
+  | 'Duplicate Commission'
+  | 'Incorrect Rate'
+  | 'Incorrect Sales Rep Assignment'
+  | 'Missing Commission'
+  | 'Overpayment'
+  | 'Underpayment'
+  | 'Incorrect Quota Accelerator'
+  | 'Clawback Not Applied'
+  | 'Wrong Plan Version'
+
+export type CommissionAuditStatus =
+  | 'Open'
+  | 'Investigating'
+  | 'Resolved'
+  | 'Accepted'
+  | 'Rejected'
+
+export interface FactCommissionAuditException {
+  audit_id: string
+  audit_type: CommissionAuditType
+  rep_id: string
+  customer_id: string | null
+  ledger_id: string | null
+  payment_id: string | null
+  opportunity_id: string | null
+  period: string
+  expected_amount: number
+  actual_amount: number
+  difference: number
+  root_cause: string
+  suggested_owner: ResponsibleTeam
+  status: CommissionAuditStatus
+  resolution_notes: string
+  recommended_action: string
+  detected_date: string
+  financial_impact: number
+  /** Investigation needed — not booked loss */
+  is_confirmed_loss: false
   synthetic: true
 }
 
@@ -422,7 +608,18 @@ export interface DataStore {
   forecasts: FactForecast[]
   /** Every forecast version × horizon — for accuracy-by-horizon analysis */
   forecastSnapshots: FactForecast[]
+  /** Synthetic Management Plan targets — independent of Forecast rows */
+  revenueTargets: FactRevenueTarget[]
   exceptions: FactException[]
+  /** Sales compensation — synthetic; linked via account_owner / customer / opportunity */
+  salesReps: DimSalesRep[]
+  compensationPlans: DimCompensationPlan[]
+  compensationPlanVersions: FactCompensationPlanVersion[]
+  salesQuotas: FactSalesQuota[]
+  commissionEligibility: FactCommissionEligibility[]
+  commissionLedger: FactCommissionLedger[]
+  commissionPayments: FactCommissionPayment[]
+  commissionAuditExceptions: FactCommissionAuditException[]
 }
 
 export interface GlobalFilters {

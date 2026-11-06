@@ -1,4 +1,4 @@
-import { MoreHorizontal, TrendingDown, TrendingUp } from 'lucide-react'
+import { Info, MoreHorizontal, TrendingDown, TrendingUp } from 'lucide-react'
 import { useState } from 'react'
 import { KPI_DEFINITIONS } from '@/calc/kpiDefinitions'
 import { METRIC_REGISTRY, type MetricId } from '@/calc/metricRegistry'

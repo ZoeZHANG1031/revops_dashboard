@@ -16,7 +16,9 @@ import {
 } from '@/calc/reconciliation'
 import { computeReconciliationBridge } from '@/calc/reconBridge'
 import { EXCEPTION_REGISTRY, exposureByClass, isOpenException } from '@/calc/exceptionRegistry'
+import { ModuleSubNav } from '@/components/layout/ModuleSubNav'
 import { PageHeader } from '@/components/common/PageHeader'
+import { REVENUE_PERFORMANCE_NAV } from '@/lib/icons'
 import { InfoTip, StatusIndicator } from '@/components/common/StatusIndicator'
 import { FloatingWaterfall } from '@/components/charts/FloatingWaterfall'
 import { ChartCard } from '@/components/common/ChartCard'
@@ -197,6 +199,7 @@ export function RevenueReconciliation() {
 
   return (
     <div className="space-y-5">
+      <ModuleSubNav items={REVENUE_PERFORMANCE_NAV} />
       <PageHeader
         path="/reconciliation"
         scope={`${filters.startPeriod} → ${filters.endPeriod} · unconfirmed ≠ recoverable`}
