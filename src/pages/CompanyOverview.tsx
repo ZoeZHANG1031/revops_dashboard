@@ -339,15 +339,23 @@ export function CompanyOverview() {
             icon="geography"
             label="Active Metro Markets"
             value={formatNumber(model.scale.activeMetroMarkets)}
-            sub="in period"
-            hint="Distinct metros with at least one shipment in the period."
+            sub={`${formatNumber(model.scale.activeStations)} stations`}
+            hint="Distinct metros / stations with at least one shipment lot in the period."
           />
           <Glance
             icon="delivery"
-            label="Active DSP Partners"
-            value={model.scale.activeDspPartners != null ? formatNumber(model.scale.activeDspPartners) : 'N/A'}
-            sub="in period"
-            hint="Distinct dsp_id on shipments in the period."
+            label="Network Utilization"
+            value={
+              model.scale.networkUtilization == null
+                ? 'N/A'
+                : formatPercent(model.scale.networkUtilization)
+            }
+            sub={
+              model.scale.monthlyCapacity
+                ? `cap ${formatNumber(model.scale.monthlyCapacity)} pkgs/mo`
+                : 'no capacity'
+            }
+            hint="Period packages ÷ (active station daily capacity × 30 × months). DSP partners remain available in Unit Economics."
             onClick={() => navigateWithContext('/unit-economics', { sourcePage: '/' })}
           />
           <Glance
@@ -529,12 +537,111 @@ export function CompanyOverview() {
                 },
               ]}
             />
+            {selectedMetro && (
+              <div className="mt-3">
+                <p className="mb-1 text-xs font-semibold text-ink-muted">
+                  Stations in {selectedMetro.replace(' Metro', '')} · click to set Station filter
+                </p>
+                <DataTable
+                  rows={(data.stations ?? [])
+                    .filter((s) => s.metro === selectedMetro)
+                    .map((s) => {
+                      const pkgs = data.shipments
+                        .filter(
+                          (sh) =>
+                            sh.station_id === s.station_id &&
+                            sh.ship_date.slice(0, 7) >= filters.startPeriod &&
+                            sh.ship_date.slice(0, 7) <= filters.endPeriod,
+                        )
+                        .reduce((a, sh) => a + sh.package_count, 0)
+                      return {
+                        id: s.station_id,
+                        station_id: s.station_id,
+                        station_name: s.station_name,
+                        capacity: s.capacity_daily * 30,
+                        packages: pkgs,
+                        util: s.capacity_daily ? (pkgs / (s.capacity_daily * 30)) * 100 : null,
+                      }
+                    })}
+                  rowKey={(r) => r.station_id}
+                  selectedKey={filters.stations?.[0] ?? null}
+                  defaultPageSize={25}
+                  onRowClick={(r) =>
+                    setFilters({
+                      ...filters,
+                      metros: [selectedMetro],
+                      stations: [r.station_id],
+                    })
+                  }
+                  columns={[
+                    { key: 'n', header: 'Station', render: (r) => r.station_name, sortValue: (r) => r.station_name },
+                    {
+                      key: 'p',
+                      header: 'Packages',
+                      align: 'right',
+                      render: (r) => formatNumber(r.packages),
+                      sortValue: (r) => r.packages,
+                    },
+                    {
+                      key: 'c',
+                      header: 'Mo Cap',
+                      align: 'right',
+                      render: (r) => formatNumber(r.capacity),
+                      sortValue: (r) => r.capacity,
+                    },
+                    {
+                      key: 'u',
+                      header: 'Util %',
+                      align: 'right',
+                      render: (r) => (r.util == null ? 'N/A' : formatPercent(r.util)),
+                      sortValue: (r) => r.util ?? -1,
+                    },
+                  ]}
+                />
+              </div>
+            )}
           </ChartCard>
         </div>
       </div>
 
       {/* D — Portfolio */}
       <div className="grid gap-4 lg:grid-cols-2">
+        <ChartCard
+          icon="customers"
+          iconTone="customer"
+          title="Customer Mix by Industry"
+          subtitle="Net Billing share by industry · Synthetic"
+        >
+          <DataTable
+            rows={model.industries.map((i) => ({ ...i, id: i.industry }))}
+            rowKey={(r) => r.industry}
+            defaultPageSize={25}
+            columns={[
+              { key: 'i', header: 'Industry', render: (r) => r.industry, sortValue: (r) => r.industry },
+              {
+                key: 'c',
+                header: 'Customers',
+                align: 'right',
+                render: (r) => formatNumber(r.customers),
+                sortValue: (r) => r.customers,
+              },
+              {
+                key: 'r',
+                header: 'Net Billing',
+                align: 'right',
+                render: (r) => formatCurrency(r.revenue, true),
+                sortValue: (r) => r.revenue,
+              },
+              {
+                key: 's',
+                header: 'Share',
+                align: 'right',
+                render: (r) => formatPercent(r.revenueShare),
+                sortValue: (r) => r.revenueShare ?? -1,
+              },
+            ]}
+          />
+        </ChartCard>
         <ChartCard
           icon="customers"
           iconTone="customer"

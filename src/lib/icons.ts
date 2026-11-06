@@ -44,10 +44,20 @@ export const PAGE_META: Record<string, PageMeta> = {
   '/reconciliation': { path: '/reconciliation', label: 'Reconciliation', icon: Scale, question: 'Do expected charges, billing and revenue agree — and why not?' },
   '/forecasting': { path: '/forecasting', label: 'Forecasting', icon: ChartNoAxesCombined, question: 'Are actuals tracking forecast, and how wide is the scenario range?' },
   '/customers': { path: '/customers', label: 'Customer Intelligence', icon: UsersRound, question: 'Which customers create value — and which put revenue at risk?' },
+  '/customer-360': { path: '/customer-360', label: 'Customer 360', icon: Users, question: 'What is happening inside this one customer account?' },
   '/unit-economics': { path: '/unit-economics', label: 'Unit Economics', icon: Wallet, question: 'What do we earn per package, and where does margin leak?' },
 }
 
-export const PAGE_ORDER = ['/', '/executive', '/lifecycle', '/reconciliation', '/forecasting', '/customers', '/unit-economics']
+export const PAGE_ORDER = [
+  '/',
+  '/executive',
+  '/lifecycle',
+  '/reconciliation',
+  '/forecasting',
+  '/customers',
+  '/customer-360',
+  '/unit-economics',
+]
 
 export function pageMeta(path: string): PageMeta | undefined {
   return PAGE_META[path]

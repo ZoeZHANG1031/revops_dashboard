@@ -93,9 +93,11 @@ export function CustomerIntelligence() {
     setSelectedId(customerId)
     setHighlightCustomerId(customerId)
     pushDrill({ level: 'customer', id: customerId, label: customerName })
-    requestAnimationFrame(() =>
-      document.getElementById('customer-360')?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
-    )
+    navigateWithContext('/customer-360', {
+      customerId,
+      highlightCustomerId: customerId,
+      sourcePage: '/customers',
+    })
   }
   useEffect(() => {
     if (highlightCustomerId) setSelectedId(highlightCustomerId)

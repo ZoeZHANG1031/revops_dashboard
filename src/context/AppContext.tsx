@@ -65,6 +65,7 @@ export interface NavigateExtras {
   customerId?: string | null
   region?: string | null
   metro?: string | null
+  station?: string | null
   serviceType?: string | null
   startPeriod?: string | null
   endPeriod?: string | null
@@ -229,6 +230,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         customerIds: q.filters.customerIds ?? prev.customerIds,
         regions: q.filters.regions ?? prev.regions,
         metros: q.filters.metros ?? prev.metros ?? [],
+        stations: q.filters.stations ?? prev.stations ?? [],
         serviceTypes: q.filters.serviceTypes ?? prev.serviceTypes,
         snapshot: baseData.meta.snapshot_label,
       }
@@ -239,6 +241,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         prev.customerIds.join('|') === next.customerIds.join('|') &&
         prev.regions.join('|') === next.regions.join('|') &&
         (prev.metros ?? []).join('|') === next.metros.join('|') &&
+        (prev.stations ?? []).join('|') === (next.stations ?? []).join('|') &&
         prev.serviceTypes.join('|') === next.serviceTypes.join('|')
       ) {
         return prev
@@ -333,6 +336,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const normalized: GlobalFilters = {
           ...next,
           metros: next.metros ?? [],
+          stations: next.stations ?? [],
         }
         writeUrl(normalized, scenario, dateBasis, localFilters, highlightCustomerId, openEntity)
         return normalized
@@ -424,6 +428,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
               ? [extras.metro]
               : []
             : (filters.metros ?? []),
+        stations:
+          extras.station !== undefined
+            ? extras.station
+              ? [extras.station]
+              : []
+            : (filters.stations ?? []),
         serviceTypes: extras.serviceType
           ? ([extras.serviceType] as ServiceType[])
           : extras.serviceType === null
@@ -436,6 +446,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (extras.metro && !extras.region) {
         const ship = data.shipments.find((s) => s.metro === extras.metro)
         if (ship) nextFilters.regions = [ship.region]
+      }
+      if (extras.station && (!extras.metro || !extras.region)) {
+        const st = data.stations.find((s) => s.station_id === extras.station)
+        if (st) {
+          if (!extras.metro) nextFilters.metros = [st.metro]
+          if (!extras.region) nextFilters.regions = [st.region]
+        }
       }
 
       const nextLocal: LocalAnalysisFilters = {
@@ -561,7 +578,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const openCustomer360 = useCallback(
     (customerId: string) => {
       const name = data.customers.find((c) => c.customer_id === customerId)?.customer_name ?? customerId
-      navigateWithContext('/customers', {
+      navigateWithContext('/customer-360', {
+        customerId,
         highlightCustomerId: customerId,
         openEntity: null,
         sourcePage: location.pathname,

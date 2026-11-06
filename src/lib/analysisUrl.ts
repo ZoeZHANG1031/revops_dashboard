@@ -46,6 +46,7 @@ export function parseAnalysisSearch(search: string): AnalysisQuery {
   const scenario = sp.get('scenario') as AnalysisQuery['scenario'] | null
   const dateBasis = sp.get('dateBasis') as DateBasis | null
   const metro = sp.get('metro')
+  const station = sp.get('station')
   return {
     filters: {
       startPeriod: sp.get('from') ?? undefined,
@@ -53,6 +54,7 @@ export function parseAnalysisSearch(search: string): AnalysisQuery {
       customerIds: customer ? [customer] : undefined,
       regions: region ? [region] : undefined,
       metros: metro ? [metro] : undefined,
+      stations: station ? [station] : undefined,
       serviceTypes: service ? [service] : undefined,
       snapshot: sp.get('snapshot') ?? undefined,
     },
@@ -92,6 +94,7 @@ export function buildAnalysisSearch(
   if (filters.customerIds[0]) sp.set('customer', filters.customerIds[0])
   if (filters.regions[0]) sp.set('region', filters.regions[0])
   if (filters.metros?.[0]) sp.set('metro', filters.metros[0])
+  if (filters.stations?.[0]) sp.set('station', filters.stations[0])
   if (filters.serviceTypes[0]) sp.set('service', filters.serviceTypes[0])
   if (filters.snapshot) sp.set('snapshot', filters.snapshot)
   if (extras.scenario) sp.set('scenario', extras.scenario)
@@ -114,6 +117,7 @@ export const ROUTE_BY_INTENT = {
   unbilled: '/reconciliation',
   forecast: '/forecasting',
   customers: '/customers',
+  customer360: '/customer-360',
   unit: '/unit-economics',
   overview: '/',
 } as const

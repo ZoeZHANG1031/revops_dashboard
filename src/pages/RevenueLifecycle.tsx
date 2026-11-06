@@ -37,6 +37,7 @@ import { DrilldownLink } from '@/components/common/DrilldownLink'
 import { PageHeader } from '@/components/common/PageHeader'
 import { TraceabilityChain } from '@/components/common/TraceabilityChain'
 import { useApp } from '@/context/AppContext'
+import { exportToCsv } from '@/lib/export'
 import { PALETTE } from '@/lib/icons'
 import { formatCurrency, formatCurrencyPrecise, formatNumber, formatPercent } from '@/lib/money'
 import type { FactException } from '@/types'
@@ -155,6 +156,26 @@ export function RevenueLifecycle() {
       <PageHeader
         path="/lifecycle"
         scope="Commercial pipeline → contract activation → operational lifecycle · TCV ≠ revenue · Net Billing ≠ Recognized ≠ Cash"
+        actions={
+          <button
+            type="button"
+            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium"
+            onClick={() =>
+              exportToCsv(
+                'lifecycle_stages.csv',
+                lifecycleFlow.map((s) => ({
+                  stage: s.label,
+                  metric: s.metricValue,
+                  activity: s.activity,
+                  period: `${filters.startPeriod}_${filters.endPeriod}`,
+                  disclaimer: 'Synthetic aggregate',
+                })),
+              )
+            }
+          >
+            Export Stages
+          </button>
+        }
       />
 
       <ChartCard

@@ -20,6 +20,7 @@ const PAGE_LABELS: Record<string, string> = {
   '/reconciliation': 'Reconciliation',
   '/forecasting': 'Forecasting',
   '/customers': 'Customer Intelligence',
+  '/customer-360': 'Customer 360',
   '/unit-economics': 'Unit Economics',
 }
 

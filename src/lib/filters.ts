@@ -40,6 +40,12 @@ export function matchesMetro(metro: string | null | undefined, filters: GlobalFi
   return filters.metros.includes(metro)
 }
 
+export function matchesStation(stationId: string | null | undefined, filters: GlobalFilters): boolean {
+  if (!filters.stations || filters.stations.length === 0) return true
+  if (!stationId) return false
+  return filters.stations.includes(stationId)
+}
+
 /** Resolve metro for a billing/cost row via shipment join when needed. */
 export function shipmentMetro(
   data: DataStore,
@@ -56,6 +62,11 @@ function metroIndexIfNeeded(data: DataStore, filters: GlobalFilters): Map<string
   return new Map(data.shipments.map((s) => [s.shipment_id, s.metro]))
 }
 
+function stationIndexIfNeeded(data: DataStore, filters: GlobalFilters): Map<string, string> | null {
+  if (!filters.stations || filters.stations.length === 0) return null
+  return new Map(data.shipments.map((s) => [s.shipment_id, s.station_id]))
+}
+
 export function filterShipments(data: DataStore, filters: GlobalFilters): FactShipment[] {
   const scoped = rowsInPeriodRange(
     data.shipments,
@@ -66,13 +77,15 @@ export function filterShipments(data: DataStore, filters: GlobalFilters): FactSh
   const hasCust = filters.customerIds.length > 0
   const hasRegion = filters.regions.length > 0
   const hasMetro = (filters.metros?.length ?? 0) > 0
+  const hasStation = (filters.stations?.length ?? 0) > 0
   const hasService = filters.serviceTypes.length > 0
-  if (!hasCust && !hasRegion && !hasMetro && !hasService) return scoped
+  if (!hasCust && !hasRegion && !hasMetro && !hasStation && !hasService) return scoped
   return scoped.filter((s) => {
     return (
       matchesCustomer(s.customer_id, filters) &&
       matchesRegion(s.region, filters) &&
       matchesMetro(s.metro, filters) &&
+      matchesStation(s.station_id, filters) &&
       matchesService(s.service_type, filters)
     )
   })
@@ -80,7 +93,9 @@ export function filterShipments(data: DataStore, filters: GlobalFilters): FactSh
 
 export function filterBillingLines(data: DataStore, filters: GlobalFilters): FactBillingLine[] {
   const metroIdx = metroIndexIfNeeded(data, filters)
+  const stationIdx = stationIndexIfNeeded(data, filters)
   const needMetro = metroIdx != null
+  const needStation = stationIdx != null
   const scoped = rowsInPeriodRange(
     data.billingLines,
     filters.startPeriod,
@@ -94,7 +109,8 @@ export function filterBillingLines(data: DataStore, filters: GlobalFilters): Fac
       matchesService(b.service_type, filters) &&
       !b.is_duplicate &&
       (!needMetro ||
-        matchesMetro(shipmentMetro(data, b.shipment_id, metroIdx ?? undefined), filters))
+        matchesMetro(shipmentMetro(data, b.shipment_id, metroIdx ?? undefined), filters)) &&
+      (!needStation || matchesStation(stationIdx!.get(b.shipment_id) ?? null, filters))
     )
   })
 }
@@ -104,7 +120,9 @@ export function filterBillingLinesIncludingDuplicates(
   filters: GlobalFilters,
 ): FactBillingLine[] {
   const metroIdx = metroIndexIfNeeded(data, filters)
+  const stationIdx = stationIndexIfNeeded(data, filters)
   const needMetro = metroIdx != null
+  const needStation = stationIdx != null
   const scoped = rowsInPeriodRange(
     data.billingLines,
     filters.startPeriod,
@@ -117,7 +135,8 @@ export function filterBillingLinesIncludingDuplicates(
       matchesRegion(b.region, filters) &&
       matchesService(b.service_type, filters) &&
       (!needMetro ||
-        matchesMetro(shipmentMetro(data, b.shipment_id, metroIdx ?? undefined), filters))
+        matchesMetro(shipmentMetro(data, b.shipment_id, metroIdx ?? undefined), filters)) &&
+      (!needStation || matchesStation(stationIdx!.get(b.shipment_id) ?? null, filters))
     )
   })
 }
@@ -169,7 +188,9 @@ export function filterRevenue(data: DataStore, filters: GlobalFilters): FactReve
 
 export function filterCosts(data: DataStore, filters: GlobalFilters): FactCost[] {
   const metroIdx = metroIndexIfNeeded(data, filters)
+  const stationIdx = stationIndexIfNeeded(data, filters)
   const needMetro = metroIdx != null
+  const needStation = stationIdx != null
   const scoped = rowsInPeriodRange(
     data.costs,
     filters.startPeriod,
@@ -179,14 +200,15 @@ export function filterCosts(data: DataStore, filters: GlobalFilters): FactCost[]
   const hasCust = filters.customerIds.length > 0
   const hasRegion = filters.regions.length > 0
   const hasService = filters.serviceTypes.length > 0
-  if (!hasCust && !hasRegion && !needMetro && !hasService) return scoped
+  if (!hasCust && !hasRegion && !needMetro && !needStation && !hasService) return scoped
   return scoped.filter((c) => {
     return (
       matchesCustomer(c.customer_id, filters) &&
       matchesRegion(c.region, filters) &&
       matchesService(c.service_type, filters) &&
       (!needMetro ||
-        matchesMetro(shipmentMetro(data, c.shipment_id, metroIdx ?? undefined), filters))
+        matchesMetro(shipmentMetro(data, c.shipment_id, metroIdx ?? undefined), filters)) &&
+      (!needStation || matchesStation(stationIdx!.get(c.shipment_id ?? '') ?? null, filters))
     )
   })
 }
@@ -243,8 +265,63 @@ export function defaultFilters(periods: string[], historicalEnd?: string): Globa
     customerIds: [],
     regions: [],
     metros: [],
+    stations: [],
     serviceTypes: [],
     snapshot: 'Latest Synthetic Snapshot',
+  }
+}
+
+export type DatePresetId =
+  | 'last_month'
+  | 'last_3_months'
+  | 'last_12_months'
+  | 'ytd'
+  | 'previous_year'
+  | 'full_history'
+
+export const DATE_PRESETS: { id: DatePresetId; label: string }[] = [
+  { id: 'last_month', label: 'Last Month' },
+  { id: 'last_3_months', label: 'Last 3 Months' },
+  { id: 'last_12_months', label: 'Last 12 Months' },
+  { id: 'ytd', label: 'Year to Date' },
+  { id: 'previous_year', label: 'Previous Year' },
+  { id: 'full_history', label: 'Full History' },
+]
+
+/** Resolve a named date preset against available historical periods (YYYY-MM). */
+export function resolveDatePreset(
+  id: DatePresetId,
+  historicalPeriods: string[],
+): { startPeriod: string; endPeriod: string } | null {
+  const hist = [...historicalPeriods].sort()
+  if (!hist.length) return null
+  const end = hist[hist.length - 1]
+  const endYear = end.slice(0, 4)
+  switch (id) {
+    case 'last_month':
+      return { startPeriod: end, endPeriod: end }
+    case 'last_3_months': {
+      const startIdx = Math.max(0, hist.length - 3)
+      return { startPeriod: hist[startIdx], endPeriod: end }
+    }
+    case 'last_12_months': {
+      const startIdx = Math.max(0, hist.length - 12)
+      return { startPeriod: hist[startIdx], endPeriod: end }
+    }
+    case 'ytd': {
+      const ytd = hist.filter((p) => p.startsWith(endYear))
+      return { startPeriod: ytd[0] ?? end, endPeriod: end }
+    }
+    case 'previous_year': {
+      const prevYear = String(Number(endYear) - 1)
+      const yearMonths = hist.filter((p) => p.startsWith(prevYear))
+      if (!yearMonths.length) return null
+      return { startPeriod: yearMonths[0], endPeriod: yearMonths[yearMonths.length - 1] }
+    }
+    case 'full_history':
+      return { startPeriod: hist[0], endPeriod: end }
+    default:
+      return null
   }
 }
 

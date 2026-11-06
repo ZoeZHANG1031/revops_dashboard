@@ -266,7 +266,7 @@ function variableCostTotal(data: DataStore, filters: GlobalFilters): number {
 }
 
 function emptyFilters(base: GlobalFilters): GlobalFilters {
-  return { ...base, customerIds: [], regions: [], metros: [], serviceTypes: [] }
+  return { ...base, customerIds: [], regions: [], metros: [], stations: [], serviceTypes: [] }
 }
 
 export function computeCompanyOverview(data: DataStore, filters: GlobalFilters): CompanyOverviewModel {
