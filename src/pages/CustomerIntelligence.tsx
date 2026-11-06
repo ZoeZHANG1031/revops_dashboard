@@ -16,6 +16,7 @@ import {
   YAxis,
   ZAxis,
 } from 'recharts'
+import { computeClientQualityPortfolio } from '@/calc/clientQuality'
 import { computeCustomerHealth, type HealthBand } from '@/calc/customerHealth'
 import {
   buildCustomerRiskProfile,
@@ -23,6 +24,7 @@ import {
   type CustomerRiskProfile,
   type RiskType,
 } from '@/calc/customerRisk'
+import { ClientQualitySummary } from '@/components/revops/ClientQualitySummary'
 import { StatTile } from '@/components/common/StatTile'
 import { ChartCard } from '@/components/common/ChartCard'
 import { Collapsible } from '@/components/common/Collapsible'
@@ -48,6 +50,7 @@ export function CustomerIntelligence() {
     setHealthWeights,
     pushDrill,
     navigateWithContext,
+    openCustomer360,
     highlightCustomerId,
     setHighlightCustomerId,
   } = useApp()
@@ -55,6 +58,11 @@ export function CustomerIntelligence() {
   const [portfolioFilter, setPortfolioFilter] = useState<PortfolioFilter>(null)
   const [columnView, setColumnView] = useState<ColumnView>('overview')
   const [exposureAxis, setExposureAxis] = useState<ExposureAxis>('scenarioRaR')
+
+  const clientQuality = useMemo(
+    () => computeClientQualityPortfolio(data, filters, healthWeights),
+    [data, filters, healthWeights],
+  )
 
   const allRows = useMemo(
     () => computeCustomerHealth(data, filters, healthWeights),
@@ -219,8 +227,8 @@ export function CustomerIntelligence() {
       <ModuleSubNav items={CUSTOMER_NAV} />
       <PageHeader
         path="/customers"
-        title="Customer Portfolio"
-        scope="Health is an assumption-weighted score · loss probabilities are scenarios, not churn models"
+        title="Client Quality Intelligence"
+        scope="Monitor health · detect emerging risks · explain drivers · quantify exposure · Synthetic Data — not validated churn probability"
         actions={
           <button
             type="button"
@@ -252,6 +260,23 @@ export function CustomerIntelligence() {
             Export Customer Performance
           </button>
         }
+      />
+
+      <ClientQualitySummary
+        portfolio={clientQuality}
+        title="Client Quality Overview"
+        watchlistLimit={8}
+        showMatrix
+        onOpenPortfolio={(filter) => {
+          if (filter === 'at_risk') setPortfolioFilter('atRisk')
+          else if (filter === 'healthy') setPortfolioFilter(null)
+          else setPortfolioFilter(null)
+        }}
+        onOpenCustomer={(customerId) => {
+          setSelectedId(customerId)
+          setHighlightCustomerId(customerId)
+          openCustomer360(customerId)
+        }}
       />
 
       {dimensional && (

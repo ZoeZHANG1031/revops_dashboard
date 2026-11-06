@@ -31,9 +31,11 @@ import {
   computeShipmentToRevenueFlow,
 } from '@/calc/logistics'
 import { computeSharedMetrics } from '@/calc/metricRegistry'
+import { computeClientQualityPortfolio } from '@/calc/clientQuality'
 import { computeVarianceBridge } from '@/calc/varianceBridge'
 import { FloatingWaterfall } from '@/components/charts/FloatingWaterfall'
 import { BridgeAttribution } from '@/components/charts/BridgeAttribution'
+import { ClientQualitySummary } from '@/components/revops/ClientQualitySummary'
 import { summarizeSteps } from '@/lib/waterfall'
 import { ChartCard } from '@/components/common/ChartCard'
 import { Collapsible } from '@/components/common/Collapsible'
@@ -61,6 +63,10 @@ export function ExecutiveOverview() {
 
   const deferredFilters = useDeferredValue(filters)
   const m = useMemo(() => computeSharedMetrics(data, filters, scenario), [data, filters, scenario])
+  const clientQuality = useMemo(
+    () => computeClientQualityPortfolio(data, deferredFilters),
+    [data, deferredFilters],
+  )
   const issues = useMemo(() => buildTopBusinessIssues(data, filters, scenario, m), [data, filters, scenario, m])
   const series = useMemo(() => monthlyRevenueSeries(data, filters), [data, filters])
   const bridge = useMemo(
@@ -211,6 +217,7 @@ export function ExecutiveOverview() {
         <span className="self-center font-semibold uppercase tracking-wide text-ink-muted">Analyze</span>
         {(
           [
+            ['Client Quality', '/customers'],
             ['Revenue → Gap → Customers', '/forecasting'],
             ['Billing Leakage', '/lifecycle'],
             ['Profitability', '/unit-economics'],
@@ -228,6 +235,25 @@ export function ExecutiveOverview() {
           </button>
         ))}
       </nav>
+
+      {/* Client Quality — JD: Monitor health → surface emerging risks → proactive AM */}
+      <ClientQualitySummary
+        portfolio={clientQuality}
+        watchlistLimit={6}
+        showMatrix={false}
+        onOpenPortfolio={(filter) =>
+          navigateWithContext('/customers', {
+            sourcePage: '/executive',
+            toast:
+              filter === 'at_risk'
+                ? 'Filtered context: open Client Quality Portfolio · focus At Risk / Critical'
+                : 'From Executive · Client Quality Portfolio',
+          })
+        }
+        onOpenCustomer={(customerId) =>
+          openCustomer360(customerId)
+        }
+      />
 
       {/* Level 1 — three headline KPIs */}
       <section className="grid gap-4 md:grid-cols-3">

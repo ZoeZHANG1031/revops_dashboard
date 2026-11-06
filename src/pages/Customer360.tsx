@@ -11,7 +11,12 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
+import {
+  attributeHealthChange,
+  scoreClientQuality,
+} from '@/calc/clientQuality'
 import { computeCustomerContractHealth } from '@/calc/customerContractHealth'
+import { customerComparisonWindow } from '@/calc/customerComparison'
 import { listCustomerEngagementEvents, listPlannedActivities } from '@/calc/customerEngagement'
 import { buildCustomerEvidence, type EvidenceLink, type RiskEvidenceRow } from '@/calc/customerEvidence'
 import { computeCustomerHealth } from '@/calc/customerHealth'
@@ -20,6 +25,7 @@ import { computeCustomerRevenueBridge } from '@/calc/customerRevenueBridge'
 import { buildCustomerRiskProfile } from '@/calc/customerRisk'
 import { computeCustomerCommission } from '@/calc/salesCompensation'
 import { FloatingWaterfall } from '@/components/charts/FloatingWaterfall'
+import { ClientQualityDimensionBars } from '@/components/revops/ClientQualitySummary'
 import { ChartCard } from '@/components/common/ChartCard'
 import { Collapsible } from '@/components/common/Collapsible'
 import { DataTable } from '@/components/common/DataTable'
@@ -91,6 +97,25 @@ export function Customer360() {
     () => (customerId ? computeCustomerHealth(data, custFilters, healthWeights)[0] ?? null : null),
     [data, custFilters, healthWeights, customerId],
   )
+  const cqScore = useMemo(
+    () => (health ? scoreClientQuality(health, { asOfDate: data.meta.as_of_date }) : null),
+    [health, data.meta.as_of_date],
+  )
+  const cqAttribution = useMemo(() => {
+    if (!customerId || !health) return null
+    const window = customerComparisonWindow(data, filters)
+    if (!window.prior) return null
+    const priorRows = computeCustomerHealth(
+      data,
+      { ...custFilters, startPeriod: window.prior.startPeriod, endPeriod: window.prior.endPeriod },
+      healthWeights,
+    )
+    const priorHealth = priorRows[0]
+    if (!priorHealth) return null
+    const priorCq = scoreClientQuality(priorHealth, { asOfDate: data.meta.as_of_date })
+    const currentCq = scoreClientQuality(health, { asOfDate: data.meta.as_of_date })
+    return attributeHealthChange(priorCq, currentCq)
+  }, [customerId, health, data, filters, custFilters, healthWeights])
   const profile = useMemo(() => (health ? buildCustomerRiskProfile(health, data, filters) : null), [health, data, filters])
   const revBridge = useMemo(
     () => (customerId ? computeCustomerRevenueBridge(data, filters, customerId) : null),
@@ -443,6 +468,69 @@ export function Customer360() {
           </div>
         </div>
       </ChartCard>
+
+      {cqScore && (
+        <ChartCard
+          id="c360-cq"
+          title="Client Quality dimensions (N/A-safe)"
+          subtitle="Five-dimension CQ model · missing Relationship Signals excluded and weights renormalized · not churn probability"
+          formula="CQ = Σ(available dimension × normalized weight). Complaints/tickets not in Synthetic Data → Relationship often N/A."
+          insight={
+            cqAttribution?.totalChange != null
+              ? `CQ change ${cqAttribution.totalChange >= 0 ? '+' : ''}${cqAttribution.totalChange} pts vs prior YoY window`
+              : cqAttribution?.note ?? undefined
+          }
+        >
+          <div className="grid gap-4 lg:grid-cols-2">
+            <ClientQualityDimensionBars
+              portfolioScore={cqScore}
+              onSelectDimension={(key) => {
+                if (key === 'serviceQuality')
+                  go({
+                    path: '/lifecycle',
+                    label: 'Lifecycle',
+                    extras: { customerId, sourcePage: '/customer-360' },
+                  })
+                else if (key === 'financialHealth')
+                  go({
+                    path: '/reconciliation',
+                    label: 'Reconciliation',
+                    extras: { customerId, sourcePage: '/customer-360' },
+                  })
+                else if (key === 'revenueStability')
+                  go({
+                    path: '/unit-economics',
+                    label: 'Unit Economics',
+                    extras: { customerId, sourcePage: '/customer-360' },
+                  })
+                else document.getElementById('c360-volume')?.scrollIntoView({ behavior: 'smooth' })
+              }}
+            />
+            {cqAttribution && cqAttribution.steps.length > 0 ? (
+              <div>
+                <p className="mb-2 text-xs font-semibold text-ink">Health score change attribution</p>
+                <FloatingWaterfall
+                  steps={cqAttribution.steps.map((s) => ({
+                    key: s.key,
+                    label: s.label,
+                    amount: s.amount,
+                    shortLabel: s.label.split(/[\s/]/)[0]?.slice(0, 10) ?? s.key,
+                  }))}
+                  height={220}
+                  totalKeys={['prior', 'current']}
+                  valueFormat={(v) => `${v.toFixed(1)} pts`}
+                  tickFormat={(v) => `${Math.round(v)}`}
+                  footingNote={cqAttribution.note}
+                />
+              </div>
+            ) : (
+              <p className="text-sm text-ink-muted">
+                {cqAttribution?.note ?? 'Insufficient History for CQ attribution (need prior YoY window).'}
+              </p>
+            )}
+          </div>
+        </ChartCard>
+      )}
 
       {/* What changed: volume */}
       <ChartCard

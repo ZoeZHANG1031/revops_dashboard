@@ -109,13 +109,13 @@ export const PAGE_META: Record<string, PageMeta> = {
   },
   '/customers': {
     path: '/customers',
-    label: 'Customer Portfolio',
+    label: 'Client Quality',
     icon: UsersRound,
-    question: 'Which customers create value — and which put revenue at risk?',
+    question: 'Which clients need attention — and what is driving deterioration?',
   },
   '/customer-360': {
     path: '/customer-360',
-    label: 'Customer 360',
+    label: 'Client 360',
     icon: Users,
     question: 'What is happening inside this one customer account?',
   },
