@@ -15,7 +15,7 @@ import {
   YAxis,
   ZAxis,
 } from 'recharts'
-import { WrapTick } from '@/components/charts/WrapTick'
+import { CategoryTick, exceptionAxisLabel } from '@/components/charts/CategoryTick'
 import { rollupExceptionsByRootCause } from '@/calc/actionRollup'
 import {
   classifyExceptionNature,
@@ -341,6 +341,8 @@ export function RevenueReconciliation() {
       return {
         ...r,
         label: r.key,
+        /** Short unique axis label — full name stays in tooltip / title */
+        axisLabel: exceptionAxisLabel(r.key),
         cumPct: reasonTotal > 0 ? (cum / reasonTotal) * 100 : 0,
       }
     })
@@ -669,11 +671,16 @@ export function RevenueReconciliation() {
             {pareto.length === 0 ? (
               <p className="py-6 text-center text-xs text-ink-muted">No open exposure for current filters</p>
             ) : (
-              <div className="h-64">
+              <div className="h-72">
                 <ResponsiveContainer width="100%" height="100%">
-                  <ComposedChart data={pareto} margin={{ left: 4, right: 8, bottom: 24 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={PALETTE.grid} />
-                    <XAxis dataKey="label" tick={<WrapTick maxChars={10} />} interval={0} height={48} />
+                  <ComposedChart data={pareto} margin={{ top: 4, left: 4, right: 8, bottom: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={PALETTE.grid} vertical={false} />
+                    <XAxis
+                      dataKey="axisLabel"
+                      interval={0}
+                      height={68}
+                      tick={<CategoryTick mode="angle" maxChars={11} fontSize={10} angle={-40} />}
+                    />
                     <YAxis
                       yAxisId="amt"
                       tick={{ fontSize: 10 }}
@@ -685,10 +692,14 @@ export function RevenueReconciliation() {
                       orientation="right"
                       domain={[0, 100]}
                       tick={{ fontSize: 10 }}
-                      unit="%"
-                      width={36}
+                      tickFormatter={(v) => `${v}%`}
+                      width={40}
                     />
                     <Tooltip
+                      labelFormatter={(_, payload) => {
+                        const row = payload?.[0]?.payload as { label?: string } | undefined
+                        return row?.label ?? ''
+                      }}
                       formatter={(v, name) => [
                         String(name).includes('%')
                           ? formatPercent(Number(v))
@@ -750,9 +761,10 @@ export function RevenueReconciliation() {
                       type="number"
                       dataKey="x"
                       name="Oldest age"
-                      unit="d"
                       tick={{ fontSize: 10 }}
-                      label={{ value: 'Oldest case days', position: 'insideBottom', offset: -4, fontSize: 10 }}
+                      tickFormatter={(v) => `${v}d`}
+                      label={{ value: 'Oldest case days', position: 'insideBottom', offset: -2, fontSize: 10 }}
+                      height={36}
                     />
                     <YAxis
                       type="number"
@@ -830,7 +842,7 @@ export function RevenueReconciliation() {
                       <th className="p-1 text-left font-semibold text-ink-muted">Service</th>
                       {heatTypes.map((t) => (
                         <th key={t} className="max-w-[72px] truncate p-1 font-semibold text-ink-muted" title={t}>
-                          {t.split(' ')[0]}
+                          {exceptionAxisLabel(t)}
                         </th>
                       ))}
                     </tr>
@@ -1228,8 +1240,13 @@ export function RevenueReconciliation() {
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={volumeMatrix}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#dce6df" />
-                  <XAxis dataKey="metric" tick={<WrapTick maxChars={11} />} interval={0} height={44} />
-                  <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => formatNumber(Number(v))} />
+                  <XAxis
+                    dataKey="metric"
+                    interval={0}
+                    height={56}
+                    tick={<CategoryTick mode="angle" maxChars={10} fontSize={10} />}
+                  />
+                  <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => formatNumber(Number(v))} width={52} />
                   <Tooltip formatter={(v) => formatNumber(Number(v))} />
                   <Bar
                     isAnimationActive={false}
@@ -1250,8 +1267,13 @@ export function RevenueReconciliation() {
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={dollarMatrix}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#dce6df" />
-                  <XAxis dataKey="metric" tick={<WrapTick maxChars={11} />} interval={0} height={44} />
-                  <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => formatAxisMoney(Number(v))} />
+                  <XAxis
+                    dataKey="metric"
+                    interval={0}
+                    height={56}
+                    tick={<CategoryTick mode="angle" maxChars={10} fontSize={10} />}
+                  />
+                  <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => formatAxisMoney(Number(v))} width={56} />
                   <Tooltip formatter={(v) => formatCurrencyPrecise(Number(v))} />
                   <Bar
                     isAnimationActive={false}

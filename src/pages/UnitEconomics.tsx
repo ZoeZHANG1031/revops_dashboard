@@ -13,7 +13,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { WrapTick } from '@/components/charts/WrapTick'
+import { CategoryTick } from '@/components/charts/CategoryTick'
 import {
   computeCostDrivers,
   computeUnitEconomics,
@@ -422,7 +422,12 @@ export function UnitEconomics({
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={stackRows}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
-                <XAxis dataKey="fullLabel" tick={<WrapTick maxChars={12} />} interval={0} height={44} />
+                <XAxis
+                  dataKey="fullLabel"
+                  interval={0}
+                  height={56}
+                  tick={<CategoryTick mode="angle" maxChars={10} fontSize={10} angle={-35} />}
+                />
                 <YAxis
                   tick={{ fontSize: 12 }}
                   tickFormatter={(v) =>

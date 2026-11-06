@@ -13,7 +13,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { WrapTick } from '@/components/charts/WrapTick'
+import { CategoryTick } from '@/components/charts/CategoryTick'
 import {
   computeCompanyOverview,
   type BubbleColorMetric,
@@ -704,7 +704,12 @@ export function CompanyOverview() {
             <ResponsiveContainer width="100%" height="100%">
               <ComposedChart data={pareto} margin={{ left: 0, right: 4, bottom: 4 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke={PALETTE.grid} vertical={false} />
-                <XAxis dataKey="fullName" tick={<WrapTick maxChars={8} />} interval={0} height={44} />
+                <XAxis
+                  dataKey="fullName"
+                  interval={0}
+                  height={56}
+                  tick={<CategoryTick mode="angle" maxChars={9} fontSize={9} angle={-40} />}
+                />
                 <YAxis yAxisId="l" tick={{ fontSize: 12 }} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
                 <YAxis yAxisId="r" orientation="right" domain={[0, 100]} tick={{ fontSize: 12 }} tickFormatter={(v) => `${v}%`} />
                 <Tooltip

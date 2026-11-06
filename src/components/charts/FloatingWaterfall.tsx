@@ -26,7 +26,7 @@ import {
   type WaterfallScaleMode,
   type WaterfallStep,
 } from '@/lib/waterfall'
-import { WrapTick } from './WrapTick'
+import { CategoryTick } from './CategoryTick'
 
 export type { WaterfallStep, WaterfallScaleMode, WaterfallRow }
 
@@ -155,7 +155,12 @@ export function FloatingWaterfall({
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={data} margin={{ top: 26, right: 10, left: 4, bottom: 4 }} barCategoryGap="30%">
             <CartesianGrid strokeDasharray="3 3" stroke="#dce6df" vertical={false} />
-            <XAxis dataKey="axisLabel" tick={<WrapTick maxChars={11} />} interval={0} height={46} />
+            <XAxis
+              dataKey="axisLabel"
+              interval={0}
+              height={42}
+              tick={<CategoryTick mode="truncate" maxChars={10} fontSize={10} />}
+            />
             <YAxis
               tick={{ fontSize: 11 }}
               width={60}
