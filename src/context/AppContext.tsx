@@ -9,10 +9,15 @@ import {
   type ReactNode,
 } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
+import { buildActionCenter } from '@/calc/actionCenter'
 import { computeCompanyOverview } from '@/calc/companyOverview'
 import { DEFAULT_SCENARIO_PARAMS } from '@/calc/forecast'
-import { DEFAULT_HEALTH_WEIGHTS, type HealthWeights } from '@/calc/customerHealth'
+import { computeCustomerHealth, DEFAULT_HEALTH_WEIGHTS, type HealthWeights } from '@/calc/customerHealth'
+import { computeSalesPipeline } from '@/calc/lifecycle'
 import { computeSharedMetrics } from '@/calc/metricRegistry'
+import { computeReconciliation } from '@/calc/reconciliation'
+import { computeUnitEconomics } from '@/calc/unitEconomics'
+import { computeVarianceBridge } from '@/calc/varianceBridge'
 import { getDataStore } from '@/data/generate'
 import {
   buildAnalysisSearch,
@@ -289,10 +294,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.search])
 
-  // Sync-warm default-scope aggregates so the landing page hits memo on first paint
+  // Sync-warm landing path; idle-warm the rest so every route stays under ~2s
   useMemo(() => {
     computeCompanyOverview(baseData, defaultFilt)
     computeSharedMetrics(baseData, defaultFilt, 'Base')
+  }, [baseData, defaultFilt])
+
+  useEffect(() => {
+    const warmRest = () => {
+      computeCustomerHealth(baseData, defaultFilt)
+      computeVarianceBridge(baseData, defaultFilt, 'Base', 'total')
+      buildActionCenter(baseData, defaultFilt)
+      computeUnitEconomics(baseData, defaultFilt)
+      computeReconciliation(baseData, defaultFilt)
+      computeSalesPipeline(baseData)
+    }
+    if (typeof requestIdleCallback === 'function') {
+      const id = requestIdleCallback(warmRest, { timeout: 1200 })
+      return () => cancelIdleCallback(id)
+    }
+    const t = window.setTimeout(warmRest, 0)
+    return () => window.clearTimeout(t)
   }, [baseData, defaultFilt])
 
   const writeUrl = useCallback(

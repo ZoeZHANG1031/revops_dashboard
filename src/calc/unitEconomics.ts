@@ -1,5 +1,6 @@
 import { MONTHLY_FIXED_OPEX_POOL_BASE, MONTHLY_FIXED_OPEX_POOL_DOWNSIDE } from '@/data/generate'
 import { filterBillingLines, filterCosts, filterShipments } from '@/lib/filters'
+import { createCalcMemo, filterCacheKey } from '@/lib/memoCalc'
 import { pkgs } from '@/lib/pricing'
 import { money, pct, sumMoney } from '@/lib/money'
 import type { DataStore, GlobalFilters, RegionCode, ServiceType } from '@/types'
@@ -65,11 +66,25 @@ const VARIABLE = new Set([
   'Other Variable',
 ])
 
+const unitEconMemo = createCalcMemo<UnitEconomicsSummary>(48)
+
 export function computeUnitEconomics(
   data: DataStore,
   filters: GlobalFilters,
   dimension: UnitEconDimension = 'customer',
   fixedScenario: 'Base' | 'Downside' = 'Base',
+): UnitEconomicsSummary {
+  const key = filterCacheKey(filters, [dimension, fixedScenario])
+  const cached = unitEconMemo.get(data, key)
+  if (cached) return cached
+  return unitEconMemo.set(data, key, computeUnitEconomicsFresh(data, filters, dimension, fixedScenario))
+}
+
+function computeUnitEconomicsFresh(
+  data: DataStore,
+  filters: GlobalFilters,
+  dimension: UnitEconDimension,
+  fixedScenario: 'Base' | 'Downside',
 ): UnitEconomicsSummary {
   const lines = filterBillingLines(data, filters)
   const costs = filterCosts(data, filters)
